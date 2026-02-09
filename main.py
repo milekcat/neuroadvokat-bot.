@@ -4,9 +4,10 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 # --- НАСТРОЙКА (берутся из Secrets) ---
-BOT_TOKEN = os.environ['8516769048:AAGNjRpGNRg5CRbna6DPmNc86ptkCeMf3fM']
-CHAT_ID_FOR_ALERTS = os.environ['-1003885932747']
-TELEGRAM_CHANNEL_URL = os.environ['https://t.me/Ai_RoboAdvokat']
+# --- НАСТРОЙКА (берутся из Secrets) ---
+BOT_TOKEN = os.environ['BOT_TOKEN']
+CHAT_ID_FOR_ALERTS = os.environ['CHAT_ID_FOR_ALERTS']
+TELEGRAM_CHANNEL_URL = os.environ['TELEGRAM_CHANNEL_URL']
 
 # --- ТЕКСТЫ И КОНСТАНТЫ ---
 # ... (Оставил тексты без изменений, они хорошие)
@@ -243,3 +244,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
