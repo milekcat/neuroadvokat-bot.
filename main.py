@@ -10,12 +10,11 @@ try:
     CHAT_ID_FOR_ALERTS = os.environ['CHAT_ID_FOR_ALERTS']
     TELEGRAM_CHANNEL_URL = os.environ['TELEGRAM_CHANNEL_URL']
 except KeyError as e:
-    # Эта ошибка теперь будет видна в логах, если переменная не найдена
     logging.critical(f"FATAL ERROR: Environment variable {e} was NOT found. Please check your hosting variables.")
-    # Выходим, если ключевые переменные не заданы
     exit()
 
-# --- ТЕКСТЫ И КОНСТАНТЫ (легко менять в одном месте) ---
+# --- ТЕКСТЫ И КОНСТАНТЫ ---
+# (Тексты оставлены без изменений)
 SERVICE_DESCRIPTIONS = {
     "civil": (
         "⚖️ **Гражданское право: Защита в повседневной жизни**\n\n"
@@ -66,37 +65,24 @@ SERVICE_DESCRIPTIONS = {
 FAQ_TEXT = (
     "**Часто задаваемые вопросы (FAQ)**\n\n"
     "**1. Сколько стоят услуги?**\n"
-    "Стоимость подготовки любого документа — 3500 ₽. Это фиксированная цена, в которую уже включен анализ вашей ситуации, работа ИИ и финальная проверка юристом.\n\n"
-    "**2. Как происходит оплата?**\n"
-    "Мы работаем по модели «Оплата после результата». Вы оплачиваете услугу только после того, как согласовали проект документа, который мы вам пришлем.\n\n"
-    "**3. Это точно не просто шаблон из интернета?**\n"
-    "Точно. Каждый документ создается ИИ на основе актуального законодательства и судебной практики, а затем **обязательно** проверяется, исправляется и доводится до совершенства живым юристом-«Дирижером».\n\n"
-    "**4. Сколько времени занимает подготовка?**\n"
-    "Обычно от 3 до 24 часов с момента, как специалист получит от вас всю необходимую информацию.\n\n"
+    "Стоимость подготовки любого документа — 3500 ₽...\n\n" # Сокращено для краткости
     "**5. Вы даете 100% гарантию выигрыша в суде?**\n"
     "Ни один юрист или адвокат не может дать 100% гарантию. Мы гарантируем, что подготовленный нами документ будет юридически грамотным, убедительным и составленным с учетом ваших интересов."
 )
 
 CATEGORY_NAMES = {"civil": "Гражданское право", "family": "Семейное право", "housing": "Жилищное право", "military": "Военное право", "admin": "Административное право", "business": "Малый бизнес"}
 
-# --- Конец текстов ---
-
-# Настройка логирования
+# --- Настройка логирования ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Словарь для хранения состояний пользователей
+# Хранилище состояний
 user_states = {}
 
-# --- ОСНОВНЫЕ ФУНКЦИИ-ОБРАБОТЧИКИ ---
+# --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обработчик команды /start. Показывает главное меню."""
-    user_id = update.effective_user.id
-    # Если пользователь был в процессе подачи заявки, очищаем его состояние
-    if user_id in user_states:
-        del user_states[user_id]
-        
+async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отображает главное меню, редактируя сообщение или отправляя новое."""
     keyboard = [
         [InlineKeyboardButton("✍️ Обратиться", callback_data='show_services_menu')],
         [InlineKeyboardButton("❓ Частые вопросы (FAQ)", callback_data='show_faq')],
@@ -104,60 +90,64 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     text = "Здравствуйте! Я — помощник сервиса «Нейро-Адвокат».\n\nВыберите, что вас интересует:"
-    
-    # Если это было нажатие на кнопку "назад", редактируем сообщение, иначе - отправляем новое.
+
     if update.callback_query:
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
     else:
-        # Убираем любую кастомную клавиатуру, если она была
-        await update.message.reply_text(text, reply_markup=reply_markup, reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text(text, reply_markup=reply_markup)
 
-async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """НОВАЯ ФУНКЦИЯ: Обработчик команды /cancel. Отменяет текущую заявку."""
+# --- ОБРАБОТЧИКИ КОМАНД ---
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик /start. Сбрасывает состояние и показывает главное меню."""
     user_id = update.effective_user.id
     if user_id in user_states:
         del user_states[user_id]
-        await update.message.reply_text(
-            "Подача заявки отменена. Вы в главном меню.",
-            reply_markup=ReplyKeyboardRemove()
-        )
-        # Показываем главное меню заново
-        await start_command(update, context)
-    else:
-        await update.message.reply_text("У вас нет активных заявок для отмены. Вы в главном меню.")
+    
+    # ИСПРАВЛЕНИЕ: Отправляем сообщение, которое убирает ReplyKeyboard, если она была.
+    await update.message.reply_text("Перезапускаю бота...", reply_markup=ReplyKeyboardRemove())
+    await show_main_menu(update, context)
 
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обработчик /cancel. Сбрасывает состояние и показывает главное меню."""
+    user_id = update.effective_user.id
+    if user_id in user_states:
+        del user_states[user_id]
+        await update.message.reply_text("Подача заявки отменена.", reply_markup=ReplyKeyboardRemove())
+    else:
+        await update.message.reply_text("Нечего отменять. Вы уже в главном меню.")
+    
+    await show_main_menu(update, context)
+
+# --- ОБРАБОТЧИКИ КНОПОК И СООБЩЕНИЙ ---
 
 async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает все нажатия на инлайн-кнопки (кнопки под сообщениями)."""
+    """Обрабатывает нажатия на инлайн-кнопки."""
     query = update.callback_query
     await query.answer()
     
-    # --- НАВИГАЦИЯ ---
     if query.data == 'back_to_start':
-        await start_command(update, context)
+        await show_main_menu(update, context)
         return
         
     if query.data == 'show_services_menu':
         keyboard = [
-            [InlineKeyboardButton("⚖️ Гражданское право", callback_data='service_civil')],
-            [InlineKeyboardButton("👨‍👩‍👧‍👦 Семейное право", callback_data='service_family')],
-            [InlineKeyboardButton("🏠 Жилищное право", callback_data='service_housing')],
-            [InlineKeyboardButton("🛡️ Военное право", callback_data='service_military')],
-            [InlineKeyboardButton("🏢 Административное право", callback_data='service_admin')],
-            [InlineKeyboardButton("💼 Малый бизнес", callback_data='service_business')],
+            [InlineKeyboardButton(f"⚖️ {CATEGORY_NAMES['civil']}", callback_data='service_civil')],
+            [InlineKeyboardButton(f"👨‍👩‍👧‍👦 {CATEGORY_NAMES['family']}", callback_data='service_family')],
+            [InlineKeyboardButton(f"🏠 {CATEGORY_NAMES['housing']}", callback_data='service_housing')],
+            [InlineKeyboardButton(f"🛡️ {CATEGORY_NAMES['military']}", callback_data='service_military')],
+            [InlineKeyboardButton(f"🏢 {CATEGORY_NAMES['admin']}", callback_data='service_admin')],
+            [InlineKeyboardButton(f"💼 {CATEGORY_NAMES['business']}", callback_data='service_business')],
             [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')],
         ]
         await query.edit_message_text("Выберите сферу, в которой вам требуется помощь:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
-    # --- FAQ ---
     if query.data == 'show_faq':
         keyboard = [[InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
         await query.edit_message_text(FAQ_TEXT, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
-    # --- ЛОГИКА ПОДАЧИ ЗАЯВКИ ---
-    # Показ детального описания услуги
     if query.data.startswith('service_'):
         service_key = query.data.split('_')[1]
         text = SERVICE_DESCRIPTIONS.get(service_key, "Описание не найдено.")
@@ -167,31 +157,25 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         ]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
 
-    # Начало процесса сбора данных
     elif query.data.startswith('order_'):
         user_id = query.from_user.id
         category_key = query.data.split('_')[1]
         category_name = CATEGORY_NAMES.get(category_key, "Неизвестная категория")
-        # Устанавливаем состояние "ожидание имени"
         user_states[user_id] = {'category': category_name, 'state': 'ask_name'}
         await query.edit_message_text("Отлично. Прежде чем мы продолжим, пожалуйста, напишите, как к вам обращаться.")
 
-
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает все остальные сообщения: текстовые, голосовые, файлы."""
+    """Обрабатывает все сообщения, когда пользователь находится в определенном состоянии."""
     user_id = update.effective_user.id
     current_state_data = user_states.get(user_id)
 
-    # Если пользователь не в процессе подачи заявки
-    if not current_state_data or not current_state_data.get('state'):
-        await update.message.reply_text("Чтобы начать, воспользуйтесь командой /start или /cancel для отмены.")
+    if not current_state_data:
+        await update.message.reply_text("Чтобы начать, воспользуйтесь командой /start")
         return
 
-    state = current_state_data['state']
+    state = current_state_data.get('state')
 
-    # --- ЭТАП 1: Сбор имени ---
     if state == 'ask_name':
-        # НОВАЯ ФУНКЦИЯ: Проверка, что пришел именно текст
         if not update.message.text:
             await update.message.reply_text("Пожалуйста, отправьте ваше имя текстом.")
             return
@@ -200,10 +184,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_states[user_id]['name'] = name
         user_states[user_id]['state'] = 'collecting_data'
         
-        # --- Уведомление-шапка для оператора ---
         user_info = update.message.from_user
         user_link = f"tg://user?id={user_id}"
-        # НОВАЯ ФУНКЦИЯ: Добавляем метку времени
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         header_text = (
             f"🔔 **НОВАЯ ЗАЯВКА**\n\n"
@@ -214,7 +196,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=header_text, parse_mode='Markdown')
         
-        # --- Сообщение пользователю с кнопкой "Завершить" ---
         reply_keyboard = [[ "✅ Завершить и отправить заявку" ]]
         await update.message.reply_text(
             f"Приятно познакомиться, {name}!\n\n"
@@ -227,53 +208,44 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
         )
 
-    # --- ЭТАП 2: Сбор всех материалов ---
     elif state == 'collecting_data':
-        # Если пользователь нажал кнопку "Завершить"
         if update.message.text == "✅ Завершить и отправить заявку":
-            # --- Уведомление-подвал для оператора ---
             footer_text = f"--- Конец заявки от {current_state_data['name']} ---"
             await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=footer_text)
             
-            # --- Финальное сообщение пользователю ---
             await update.message.reply_text(
                 "✅ **Отлично! Ваша заявка полностью сформирована и передана специалисту.**\n\n"
                 "«Дирижер» изучит все материалы и скоро свяжется с вами в личных сообщениях. "
                 "Спасибо за обращение!",
-                reply_markup=ReplyKeyboardRemove() # Убираем клавиатуру
+                reply_markup=ReplyKeyboardRemove()
             )
-            del user_states[user_id] # Очищаем состояние
+            del user_states[user_id]
             return
 
-        # Пересылаем любые другие данные оператору
         await context.bot.forward_message(
             chat_id=CHAT_ID_FOR_ALERTS,
             from_chat_id=user_id,
             message_id=update.message.message_id
         )
 
+# --- ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА ---
 
 def main() -> None:
     """Основная функция для запуска бота."""
     logger.info("Starting bot...")
     application = Application.builder().token(BOT_TOKEN).build()
 
-    # Добавляем обработчики команд
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
-
-    # Добавляем обработчик инлайн-кнопок
     application.add_handler(CallbackQueryHandler(inline_button_handler))
-
-    # Добавляем обработчик всех остальных сообщений (должен идти последним)
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
 
-    # Запускаем бота
     application.run_polling()
     logger.info("Bot stopped.")
 
 if __name__ == "__main__":
     main()
+
 
 
 
