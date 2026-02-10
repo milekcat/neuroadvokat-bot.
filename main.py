@@ -236,11 +236,13 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         ticket_id_to_delete = state_data.get('active_ticket')
         if ticket_id_to_delete and ticket_id_to_delete in tickets_db:
             with tickets_lock:
-                del tickets_db[ticket_id_to_delete]
-                save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
-            logger.info(f"Orphaned ticket {ticket_id_to_delete} was deleted due to /cancel.")
-        del user_states[user_id]
-        save_json_data(user_states, USER_STATES_FILE, states_lock)
+                if ticket_id_to_delete in tickets_db:
+                    del tickets_db[ticket_id_to_delete]
+                    save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+                    logger.info(f"Orphaned ticket {ticket_id_to_delete} was deleted due to /cancel.")
+        if user_id in user_states:
+            del user_states[user_id]
+            save_json_data(user_states, USER_STATES_FILE, states_lock)
         await update.message.reply_text("Создание обращения отменено.", reply_markup=ReplyKeyboardRemove())
     else:
         await update.message.reply_text("Нечего отменять. Вы уже в главном меню.", reply_markup=ReplyKeyboardRemove())
@@ -379,12 +381,7 @@ async def operator_panel_action(query, context):
     parts = query.data.split('_')
     action, ticket_id, client_user_id = parts[1], parts[2], parts[3]
     
-    message_text = ""
-    if action == 'ask':
-        message_text = f"Здравствуйте! По вашему обращению №{ticket_id} требуются уточнения. Специалист скоро напишет вам."
-    elif action == 'review':
-        message_text = f"📄 *Документ по обращению №{ticket_id} готов!* Мы отправили его вам на проверку."
-    elif action == 'close':
+    if action == 'close':
         with tickets_lock:
             if ticket_id in tickets_db:
                 tickets_db[ticket_id]['status'] = 'closed'
@@ -395,38 +392,48 @@ async def operator_panel_action(query, context):
         await context.bot.send_message(chat_id=int(client_user_id), text=f"✅ Ваше обращение №{ticket_id} успешно завершено. Спасибо!")
         return
 
+    message_text = ""
+    alert_text = "✅ Уведомление клиенту отправлено!"
+    if action == 'ask':
+        message_text = f"Здравствуйте! По вашему обращению №{ticket_id} требуются уточнения. Специалист скоро напишет вам."
+    elif action == 'review':
+        message_text = f"📄 *Документ по обращению №{ticket_id} готов!* Мы отправили его вам на проверку."
+        
     try:
         if message_text: await context.bot.send_message(chat_id=int(client_user_id), text=message_text, parse_mode=ParseMode.MARKDOWN_V2)
-        await query.answer("✅ Уведомление клиенту отправлено!", show_alert=True)
+        await query.answer(alert_text, show_alert=True)
     except Exception as e:
         await query.answer("❌ Не удалось отправить сообщение клиенту.", show_alert=True)
 
 async def legal_menu_action(query, context):
     """Навигация по юридическому меню."""
-    if query.data == 'show_legal_menu':
+    data = query.data
+    if data == 'show_legal_menu':
         keyboard = [[InlineKeyboardButton("📄 Политика конфиденциальности", callback_data='legal_policy')], [InlineKeyboardButton("⚠️ Отказ от ответственности", callback_data='legal_disclaimer')], [InlineKeyboardButton("📑 Договор публичной оферты", callback_data='legal_oferta')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
         await query.edit_message_text("Выберите документ:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(query.data, "Документ не найден.")
+        text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(data, "Документ не найден.")
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку документов", callback_data='show_legal_menu')]]), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def services_menu_action(query, context):
     """Навигация по меню услуг."""
-    if query.data == 'show_services_menu':
+    data = query.data
+    if data == 'show_services_menu':
         keyboard = [[InlineKeyboardButton(escape_markdown(name, 2), callback_data=f'service_{key}')] for key, name in CATEGORY_NAMES.items()]
         keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
         await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        service_key = query.data.split('_')[1]
+        service_key = data.split('_')[1]
         await query.edit_message_text(SERVICE_DESCRIPTIONS[service_key], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Создать обращение по этой теме", callback_data=f'order_{service_key}')]]), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def faq_menu_action(query, context):
     """Навигация по FAQ."""
-    if query.data == 'show_faq_menu':
+    data = query.data
+    if data == 'show_faq_menu':
         keyboard = [[InlineKeyboardButton("Как я получу и оплачу документ?", callback_data='faq_payment_and_delivery')], [InlineKeyboardButton("Сколько стоят услуги?", callback_data='faq_price')], [InlineKeyboardButton("Это просто шаблон?", callback_data='faq_template')], [InlineKeyboardButton("Сколько времени это займет?", callback_data='faq_timing')], [InlineKeyboardButton("Есть ли гарантии?", callback_data='faq_guarantee')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
         await query.edit_message_text("Выберите вопрос:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        faq_key = query.data.split('_', 1)[1]
+        faq_key = data.split('_', 1)[1]
         await query.edit_message_text(FAQ_ANSWERS[faq_key], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку вопросов", callback_data='show_faq_menu')]]), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def order_action(query, context):
@@ -550,3 +557,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
