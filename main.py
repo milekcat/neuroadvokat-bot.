@@ -128,7 +128,7 @@ LEGAL_OFERTA_TEXT = r"""
 
 5\.  *Ответственность сторон*
     5\.1\. *Совокупная ответственность Исполнителя по настоящему Договору ограничивается суммой платежа, уплаченного Заказчиком за конкретную Услугу\.*
-    5\.2\. Все споры решаются путем переговоров\. При невозможности достижения согласия споры передаются на рассмотрение в суд по месту нахождения Исполнителя\.
+    5\.2\. Все споры решаются путем переговоров\\. При невозможности достижения согласия споры передаются на рассмотрение в суд по месту нахождения Исполнителя\\.
 """
 SERVICE_DESCRIPTIONS = {
     "civil": (
@@ -228,7 +228,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = str(update.effective_user.id)
     state_data = user_states.get(user_id, {})
     
-    if state_data.get('state') in ['ask_name', 'collecting_data']:
+    if state_data.get('state') in ['collecting_data']:
         ticket_id_to_delete = state_data.get('active_ticket')
         if ticket_id_to_delete:
             with tickets_lock:
@@ -447,11 +447,36 @@ async def faq_menu_action(query, context):
 
 async def order_action(query, context):
     """Начало создания обращения."""
-    user_id = str(query.from_user.id)
+    user = query.from_user
+    user_id = str(user.id)
     category_key = query.data.split('_')[1]
-    user_states[user_id] = {'category': CATEGORY_NAMES[category_key], 'state': 'ask_name'}
+    name = user.full_name or user.first_name
+
+    # Сразу создаем обращение и переходим в режим сбора данных
+    ticket_id = str(get_and_increment_ticket_number())
+    user_states[user_id] = {'state': 'collecting_data', 'active_ticket': ticket_id}
     save_json_data(user_states, USER_STATES_FILE, states_lock)
-    await query.edit_message_text("Отлично. Прежде чем мы продолжим, пожалуйста, напишите, как к вам обращаться.")
+    
+    with tickets_lock:
+        tickets_db[ticket_id] = {"user_id": user_id, "user_name": name, "category": CATEGORY_NAMES[category_key], "status": "new", "creation_date": datetime.now().isoformat(), "chat_history": []}
+        save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+
+    header_text = (f"🔔 *ОБРАЩЕНИЕ №{ticket_id}*\n\n"
+                   f"*Клиент:* {escape_markdown(name, 2)}\n"
+                   f"*Категория:* {escape_markdown(CATEGORY_NAMES[category_key], 2)}\n\n"
+                   "*ВАЖНО:* Отвечайте на *это* сообщение, чтобы общаться с клиентом.")
+    await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=header_text, parse_mode=ParseMode.MARKDOWN_V2, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Взять в работу", callback_data=f"take_{ticket_id}_{user_id}"), InlineKeyboardButton("❌ Отклонить", callback_data=f"decline_{ticket_id}_{user_id}")]]))
+
+    # Удаляем старое сообщение и отправляем новое с инструкциями
+    await query.message.delete()
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"Вашему обращению присвоен *номер {ticket_id}*\\.\n\n"
+             "Теперь расскажите о вашей ситуации, отправляя сообщения, фото и файлы\\. "
+             "Когда закончите, нажмите кнопку ниже\\.",
+        reply_markup=ReplyKeyboardMarkup([["✅ Завершить и отправить обращение"]], one_time_keyboard=True, resize_keyboard=True),
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
 
 # --- 7. ОБРАБОТЧИКИ СООБЩЕНИЙ ---
 
@@ -473,27 +498,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         operator_message = f"💬 Новое сообщение по ОБРАЩЕНИЮ №{active_ticket_id}:\n\n*Клиент:* {escaped_text}"
         await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=operator_message, parse_mode=ParseMode.MARKDOWN_V2)
         await update.message.reply_text("Сообщение отправлено оператору.", quote=True)
-        return
-
-    elif current_state == 'ask_name':
-        name = update.message.text
-        if not name or name.startswith('/'): return
-        
-        ticket_id = str(get_and_increment_ticket_number())
-        user_states[user_id].update({'state': 'collecting_data', 'active_ticket': ticket_id})
-        save_json_data(user_states, USER_STATES_FILE, states_lock)
-        
-        with tickets_lock:
-            tickets_db[ticket_id] = {"user_id": user_id, "user_name": name, "category": user_states[user_id]['category'], "status": "new", "creation_date": datetime.now().isoformat(), "chat_history": []}
-            save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
-
-        header_text = (f"🔔 *ОБРАЩЕНИЕ №{ticket_id}*\n\n"
-                       f"*Клиент:* {escape_markdown(name, 2)}\n"
-                       f"*Категория:* {escape_markdown(user_states[user_id]['category'], 2)}\n\n"
-                       "*ВАЖНО:* Отвечайте на *это* сообщение, чтобы общаться с клиентом.")
-        await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=header_text, parse_mode=ParseMode.MARKDOWN_V2, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Взять в работу", callback_data=f"take_{ticket_id}_{user_id}"), InlineKeyboardButton("❌ Отклонить", callback_data=f"decline_{ticket_id}_{user_id}")]]))
-
-        await update.message.reply_text(f"Приятно познакомиться, {escape_markdown(name, 2)}\\!\n\nВашему обращению присвоен *номер {ticket_id}*\\.\n\nТеперь расскажите о вашей ситуации, отправляя сообщения, фото и файлы\\. Когда закончите, нажмите кнопку ниже\\.", reply_markup=ReplyKeyboardMarkup([["✅ Завершить и отправить обращение"]], one_time_keyboard=True, resize_keyboard=True), parse_mode=ParseMode.MARKDOWN_V2)
         return
 
     elif current_state == 'collecting_data':
@@ -566,3 +570,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
