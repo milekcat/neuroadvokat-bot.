@@ -445,9 +445,10 @@ async def faq_menu_action(query, context):
 
 async def order_action(query, context):
     """Начало создания обращения."""
-    user_id = str(query.from_user.id)
+    user = query.from_user
+    user_id = str(user.id)
     category_key = query.data.split('_')[1]
-    
+
     # Сразу переводим в состояние сбора данных
     user_states[user_id] = {'state': 'collecting_data', 'category': CATEGORY_NAMES[category_key]}
     save_json_data(user_states, USER_STATES_FILE, states_lock)
@@ -574,4 +575,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
