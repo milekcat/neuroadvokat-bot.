@@ -374,13 +374,18 @@ def main() -> None:
     
     application = Application.builder().token(NEURO_ADVOCAT_TOKEN).build()
 
+    # Добавляем обработчики команд /start и /cancel
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
+
+    # Добавляем обработчик для всех нажатий на inline-кнопки
     application.add_handler(CallbackQueryHandler(inline_button_handler))
     
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
-    application.add_handler(MessageHandler(filters.PHOTO | filters.VOICE | filters.AUDIO | filters.DOCUMENT, message_handler))
+    # ИСПРАВЛЕНО: Один обработчик для ВСЕХ сообщений, которые не являются командами.
+    # Это включает текст, фото, голосовые, документы и все остальное.
+    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
 
+    # Запускаем бота
     application.run_polling()
     logger.info("Bot has been stopped.")
 
