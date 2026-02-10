@@ -60,12 +60,9 @@ user_states = load_json_data(USER_STATES_FILE, states_lock)
 tickets_db = load_json_data(TICKETS_DB_FILE, tickets_lock)
 
 # --- 3. ТЕКСТЫ И КОНСТАНТЫ ---
-# Юридические документы
 LEGAL_POLICY_TEXT = """... (Ваш полный текст Политики конфиденциальности) ..."""
 LEGAL_DISCLAIMER_TEXT = """... (Ваш полный текст Отказа от ответственности) ..."""
 LEGAL_OFERTA_TEXT = """... (Ваш полный текст Договора оферты) ..."""
-
-# Описания услуг
 SERVICE_DESCRIPTIONS = {
     "civil": ("⚖️ **Гражданское право: Защита в повседневной жизни**\n\n... (Полный текст)"),
     "family": ("👨‍👩‍👧‍👦 **Семейное право: Деликатная помощь**\n\n... (Полный текст)"),
@@ -74,8 +71,6 @@ SERVICE_DESCRIPTIONS = {
     "admin": ("🏢 **Административное право: Борьба с бюрократией**\n\n... (Полный текст)"),
     "business": ("💼 **Для малого бизнеса и самозанятых: Юридический щит**\n\n... (Полный текст)")
 }
-
-# Ответы на частые вопросы
 FAQ_ANSWERS = {
     "price": "Стоимость подготовки любого документа — **3500 ₽** ... (Полный текст)",
     "payment_and_delivery": ("Процесс построен на **полной прозрачности и оплате за результат**:\n\n... (Полный текст)"),
@@ -83,13 +78,11 @@ FAQ_ANSWERS = {
     "timing": "Обычно от **3 до 24 часов** ... (Полный текст)",
     "guarantee": "Ни один юрист не может дать 100% гарантию выигрыша ... (Полный текст)"
 }
-
-# Вспомогательные константы
 CATEGORY_NAMES = {"civil": "Гражданское право", "family": "Семейное право", "housing": "Жилищное право", "military": "Военное право", "admin": "Административное право", "business": "Малый бизнес"}
 STATUS_EMOJI = {"new": "🆕", "in_progress": "⏳", "closed": "✅"}
 STATUS_TEXT = {"new": "Новая", "in_progress": "В работе", "closed": "Закрыта"}
 
-# --- 4. ФУНКЦИИ ИНТЕРФЕЙСА ---
+# --- 4. ФУНКЦИИ ИНТЕРФЕЙСА И КОМАНДЫ ---
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Отображает главное меню."""
@@ -102,15 +95,37 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     text = "Здравствуйте! Это **«Нейро-Адвокат»**.\n\nИспользуйте кнопку 'Мои заявки' для доступа к вашему личному кабинету.\n\nВыберите, что вас интересует:"
     
+    target_message = update.callback_query.message if update.callback_query else update.message
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        await target_message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
     else:
-        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        await target_message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Обрабатывает команду /start."""
+    user_id = str(update.effective_user.id)
+    if user_id in user_states:
+        del user_states[user_id]
+        save_json_data(user_states, USER_STATES_FILE, states_lock)
+    await show_main_menu(update, context)
+
+# ИСПРАВЛЕНО: ВОЗВРАЩЕНА НЕДОСТАЮЩАЯ ФУНКЦИЯ
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Отменяет текущий процесс подачи заявки."""
+    user_id = str(update.effective_user.id)
+    if user_states.get(user_id, {}).get('state') in ['ask_name', 'collecting_data']:
+        del user_states[user_id]
+        save_json_data(user_states, USER_STATES_FILE, states_lock)
+        await update.message.reply_text("Действие отменено.", reply_markup=ReplyKeyboardRemove())
+        logger.info(f"User {user_id} executed /cancel and cleared their state.")
+    else:
+        await update.message.reply_text("Нечего отменять. Вы уже в главном меню.", reply_markup=ReplyKeyboardRemove())
+    await show_main_menu(update, context)
 
 # --- 5. ЛИЧНЫЙ КАБИНЕТ ПОЛЬЗОВАТЕЛЯ ---
 
 async def my_tickets_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показывает пользователю список его заявок."""
+    """Показывает пользователю список его заявок (обработчик и для команды, и для кнопки)."""
     user_id = str(update.effective_user.id)
     user_tickets = {k: v for k, v in tickets_db.items() if v.get('user_id') == user_id}
 
@@ -130,7 +145,11 @@ async def my_tickets_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
     
     target = update.callback_query.message if update.callback_query else update.message
-    await target.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    if update.callback_query:
+        await target.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+    else:
+        await target.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
 
 async def view_ticket_action(update: Update, context: ContextTypes.DEFAULT_TYPE, ticket_id: str):
     """Показывает детали заявки и историю чата."""
@@ -188,7 +207,7 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await take_ticket_action(query, context)
     elif data.startswith('op_'):
         await operator_panel_action(query, context)
-    elif data.startswith('legal_'):
+    elif data.startswith('legal_') or data == 'show_legal_menu':
         await legal_menu_action(query, context)
     elif data.startswith('service_') or data == 'show_services_menu':
         await services_menu_action(query, context)
@@ -227,6 +246,9 @@ async def operator_panel_action(query, context):
     parts = query.data.split('_')
     action, ticket_id, client_user_id = parts[1], parts[2], parts[3]
     
+    message_text = ""
+    alert_text = ""
+    
     if action == 'ask':
         message_text = f"Здравствуйте! По вашей заявке №{ticket_id} требуются уточнения. Специалист скоро напишет вам."
         alert_text = "✅ Уведомление с запросом информации отправлено!"
@@ -234,8 +256,9 @@ async def operator_panel_action(query, context):
         message_text = f"📄 **Документ по заявке №{ticket_id} готов!** Мы отправили его вам на проверку."
         alert_text = "✅ Уведомление о готовности отправлено!"
     elif action == 'close':
-        tickets_db[ticket_id]['status'] = 'closed'
-        save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+        if ticket_id in tickets_db:
+            tickets_db[ticket_id]['status'] = 'closed'
+            save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
         operator_name = query.from_user.full_name.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
         new_text = f"{query.message.text_markdown_v2}\n\n*🏁 Заявка закрыта оператором {operator_name}*"
         await query.edit_message_text(new_text, parse_mode='MarkdownV2', reply_markup=None)
@@ -243,7 +266,8 @@ async def operator_panel_action(query, context):
         return
 
     try:
-        await context.bot.send_message(chat_id=int(client_user_id), text=message_text, parse_mode='Markdown')
+        if message_text:
+            await context.bot.send_message(chat_id=int(client_user_id), text=message_text, parse_mode='Markdown')
         await query.answer(alert_text, show_alert=True)
     except Exception as e:
         await query.answer("❌ Не удалось отправить сообщение клиенту.", show_alert=True)
@@ -256,7 +280,7 @@ async def legal_menu_action(query, context):
         keyboard = [[InlineKeyboardButton("📄 Политика конфиденциальности", callback_data='legal_policy')], [InlineKeyboardButton("⚠️ Отказ от ответственности", callback_data='legal_disclaimer')], [InlineKeyboardButton("📑 Договор публичной оферты", callback_data='legal_oferta')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
         await query.edit_message_text("Выберите документ:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(data)
+        text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(data, "Документ не найден.")
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку документов", callback_data='show_legal_menu')]]), parse_mode='Markdown')
 
 
@@ -300,7 +324,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     current_state = user_states.get(user_id, {}).get('state')
 
     if current_state == 'in_ticket_chat':
-        # Пользователь в режиме чата по заявке
         active_ticket_id = user_states[user_id]['active_ticket']
         ticket_data = tickets_db.get(active_ticket_id)
         if not ticket_data: return
@@ -315,7 +338,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     elif current_state == 'ask_name':
-        # Пользователь вводит свое имя
         name = update.message.text
         if not name or name.startswith('/'): return
         
@@ -333,7 +355,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return
 
     elif current_state == 'collecting_data':
-        # Пользователь присылает данные для заявки
         ticket_id = user_states[user_id]['active_ticket']
         if update.message.text == "✅ Завершить и отправить":
             await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=f"--- КОНЕЦ ПЕРВОНАЧАЛЬНОЙ ЗАЯВКИ №{ticket_id} ---")
@@ -344,7 +365,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await context.bot.forward_message(chat_id=CHAT_ID_FOR_ALERTS, from_chat_id=user_id, message_id=update.message.message_id)
         return
 
-    # Если состояние не определено, показываем главное меню
     await show_main_menu(update, context)
 
 
@@ -352,7 +372,11 @@ async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     """Обрабатывает ответы оператора в рабочем чате."""
     if str(update.message.chat_id) != str(CHAT_ID_FOR_ALERTS): return
     
+    if not update.message.reply_to_message or not update.message.reply_to_message.text:
+        return
+        
     replied_text = update.message.reply_to_message.text
+    
     if "Заявка №" not in replied_text: return
     
     try:
@@ -379,7 +403,7 @@ def main() -> None:
     application = Application.builder().token(NEURO_ADVOCAT_TOKEN).build()
 
     # Команды
-    application.add_handler(CommandHandler("start", show_main_menu))
+    application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CommandHandler("my_tickets", my_tickets_action))
     application.add_handler(CommandHandler("exit_chat", exit_chat_command))
@@ -399,3 +423,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
