@@ -27,7 +27,7 @@ if not NEURO_ADVOCAT_TOKEN or not CHAT_ID_FOR_ALERTS:
 DATA_DIR = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/app/data"))
 TICKET_COUNTER_FILE = DATA_DIR / "ticket_counter.txt"
 USER_STATES_FILE = DATA_DIR / "user_states.json"
-MESSAGE_MAP_FILE = DATA_DIR / "message_map.json" # Файл для связи сообщений оператора и клиента
+MESSAGE_MAP_FILE = DATA_DIR / "message_map.json"
 
 # --- СИСТЕМА НУМЕРАЦИИ ЗАЯВОК ---
 counter_lock = Lock()
@@ -42,7 +42,7 @@ def get_and_increment_ticket_number():
         TICKET_COUNTER_FILE.write_text(str(next_number))
         return next_number
 
-# --- УПРАВЛЕНИЕ ДАННЫМИ (Состояния и Карта Сообщений) ---
+# --- УПРАВЛЕНИЕ ДАННЫМИ ---
 states_lock = Lock()
 message_map_lock = Lock()
 
@@ -64,7 +64,7 @@ def save_json_data(data, file_path, lock):
 user_states = load_json_data(USER_STATES_FILE, states_lock)
 message_map = load_json_data(MESSAGE_MAP_FILE, message_map_lock)
 
-# --- ТЕКСТЫ И КОНСТАНТЫ (ВЗЯТЫ ИЗ ВАШЕЙ ПЕРВОЙ ВЕРСИИ) ---
+# --- ТЕКСТЫ И КОНСТАНТЫ ---
 SERVICE_DESCRIPTIONS = {
     "civil": (
         "⚖️ **Гражданское право: Защита в повседневной жизни**\n\n"
@@ -116,7 +116,6 @@ SERVICE_DESCRIPTIONS = {
         "• **Акты выполненных работ** и другие сопроводительные документы."
     )
 }
-
 FAQ_ANSWERS = {
     "price": "Стоимость подготовки любого документа — **3500 ₽**.\n\nЭто фиксированная цена, в которую уже включен анализ вашей ситуации, работа ИИ и финальная проверка юристом.",
     "payment_and_delivery": (
@@ -162,9 +161,6 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Нечего отменять. Вы уже в главном меню.", reply_markup=ReplyKeyboardRemove())
     await show_main_menu(update, context)
 
-
-# --- ОБРАБОТЧИКИ КНОПОК И СООБЩЕНИЙ ---
-
 async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
@@ -174,20 +170,17 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data.startswith('take_'):
         parts = data.split('_')
-        ticket_number, client_user_id_str = parts[1], parts[2]
+        ticket_number, client_user_id_str = parts, parts
         
         try:
-            await context.bot.send_message(
-                chat_id=int(client_user_id_str),
-                text=f"✅ **Статус обновлен:** Ваша заявка №{ticket_number} принята в работу. Специалист уже изучает ваши материалы и скоро свяжется с вами.",
-                parse_mode='Markdown'
-            )
+            await context.bot.send_message(chat_id=int(client_user_id_str), text=f"✅ **Статус обновлен:** Ваша заявка №{ticket_number} принята в работу.", parse_mode='Markdown')
             logger.info(f"Operator {user_id} took ticket {ticket_number} for client {client_user_id_str}.")
         except Exception as e:
             logger.error(f"Failed to send 'take' status update to client {client_user_id_str}: {e}")
         
         original_text = query.message.text_markdown_v2
-        operator_name = query.from_user.full_name.replace('_', '\_').replace('*', '\*').replace('`', '\`')
+        # ИСПРАВЛЕНО: Используем 'сырые' строки для безопасной замены
+        operator_name = query.from_user.full_name.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
         new_text = f"{original_text}\n\n*✅ Взято в работу оператором {operator_name}*"
         
         operator_panel = InlineKeyboardMarkup([
@@ -201,50 +194,49 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
 
     if data.startswith('op_ask_'):
         parts = data.split('_')
-        ticket_number, client_user_id_str = parts[1], parts[2]
+        ticket_number, client_user_id_str = parts, parts
         try:
             await context.bot.send_message(chat_id=int(client_user_id_str), text=f"Здравствуйте! По вашей заявке №{ticket_number} требуются уточнения. Специалист скоро напишет вам.", parse_mode='Markdown')
             await query.answer(text="✅ Уведомление клиенту отправлено!", show_alert=True)
         except Exception as e:
             await query.answer(text="❌ Не удалось отправить сообщение клиенту.", show_alert=True)
-            logger.error(f"Failed to send 'ask_info' message for ticket {ticket_number}: {e}")
         return
 
     if data.startswith('op_review_'):
         parts = data.split('_')
-        ticket_number, client_user_id_str = parts[1], parts[2]
+        ticket_number, client_user_id_str = parts, parts
         try:
-            await context.bot.send_message(chat_id=int(client_user_id_str), text=f"📄 **Документ по заявке №{ticket_number} готов!**\n\nМы отправили вам на ознакомление версию с водяными знаками.", parse_mode='Markdown')
+            await context.bot.send_message(chat_id=int(client_user_id_str), text=f"📄 **Документ по заявке №{ticket_number} готов!**", parse_mode='Markdown')
             await query.answer(text="✅ Уведомление о готовности отправлено!", show_alert=True)
         except Exception as e:
             await query.answer(text="❌ Не удалось отправить сообщение клиенту.", show_alert=True)
-            logger.error(f"Failed to send 'review' message for ticket {ticket_number}: {e}")
         return
 
     if data.startswith('op_close_'):
         parts = data.split('_')
-        ticket_number, client_user_id_str = parts[1], parts[2]
-        operator_name = query.from_user.full_name.replace('_', '\_').replace('*', '\*').replace('`', '\`')
+        ticket_number, client_user_id_str = parts, parts
+        # ИСПРАВЛЕНО: Используем 'сырые' строки
+        operator_name = query.from_user.full_name.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
         original_text = query.message.text_markdown_v2
         new_text = f"{original_text}\n\n*🏁 Заявка закрыта оператором {operator_name}*"
         try:
             await query.edit_message_text(new_text, parse_mode='MarkdownV2', reply_markup=None)
-            await context.bot.send_message(chat_id=int(client_user_id_str), text=f"✅ Ваша заявка №{ticket_number} успешно завершена. Спасибо, что выбрали нас!", parse_mode='Markdown')
+            await context.bot.send_message(chat_id=int(client_user_id_str), text=f"✅ Ваша заявка №{ticket_number} успешно завершена. Спасибо!", parse_mode='Markdown')
             logger.info(f"Operator {user_id} closed ticket {ticket_number}.")
         except Exception as e:
-            logger.error(f"Error during closing ticket {ticket_number}: {e}")
+            logger.error(f"Error closing ticket {ticket_number}: {e}")
         return
 
     if data.startswith('decline_'):
         parts = data.split('_')
-        ticket_number = parts[1]
+        ticket_number = parts
         original_text = query.message.text_markdown_v2
-        operator_name = query.from_user.full_name.replace('_', '\_').replace('*', '\*').replace('`', '\`')
+        # ИСПРАВЛЕНО: Используем 'сырые' строки
+        operator_name = query.from_user.full_name.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
         new_text = f"{original_text}\n\n*❌ Отклонено оператором {operator_name}*"
         await query.edit_message_text(new_text, parse_mode='MarkdownV2', reply_markup=None)
         return
     
-    # Обработчики навигации по меню
     if data == 'back_to_start':
         if str(query.from_user.id) in user_states:
             del user_states[str(query.from_user.id)]
@@ -254,35 +246,35 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         
     if data == 'show_services_menu':
         keyboard = [[InlineKeyboardButton(f"⚖️ {CATEGORY_NAMES['civil']}", callback_data='service_civil')], [InlineKeyboardButton(f"👨‍👩‍👧‍👦 {CATEGORY_NAMES['family']}", callback_data='service_family')], [InlineKeyboardButton(f"🏠 {CATEGORY_NAMES['housing']}", callback_data='service_housing')], [InlineKeyboardButton(f"🛡️ {CATEGORY_NAMES['military']}", callback_data='service_military')], [InlineKeyboardButton(f"🏢 {CATEGORY_NAMES['admin']}", callback_data='service_admin')], [InlineKeyboardButton(f"💼 {CATEGORY_NAMES['business']}", callback_data='service_business')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
-        await query.edit_message_text("Выберите сферу, в которой вам требуется помощь:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     if data == 'show_faq_menu':
         keyboard = [[InlineKeyboardButton("Как я получу и оплачу документ?", callback_data='faq_payment_and_delivery')], [InlineKeyboardButton("Сколько стоят услуги?", callback_data='faq_price')], [InlineKeyboardButton("Это просто шаблон?", callback_data='faq_template')], [InlineKeyboardButton("Сколько времени это займет?", callback_data='faq_timing')], [InlineKeyboardButton("Есть ли гарантии?", callback_data='faq_guarantee')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
-        await query.edit_message_text("Выберите интересующий вас вопрос:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("Выберите вопрос:", reply_markup=InlineKeyboardMarkup(keyboard))
         return
 
     if data.startswith('faq_'):
-        faq_key = data.split('_', 1)[1]
+        faq_key = data.split('_', 1)
         answer_text = FAQ_ANSWERS.get(faq_key, "Ответ не найден.")
         keyboard = [[InlineKeyboardButton("⬅️ К списку вопросов", callback_data='show_faq_menu')]]
         await query.edit_message_text(answer_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
     if data.startswith('service_'):
-        service_key = data.split('_')[1]
+        service_key = data.split('_')
         text = SERVICE_DESCRIPTIONS.get(service_key, "Описание не найдено.")
-        keyboard = [[InlineKeyboardButton("✅ Подать заявку по этой теме", callback_data=f'order_{service_key}')], [InlineKeyboardButton("⬅️ К списку услуг", callback_data='show_services_menu')]]
+        keyboard = [[InlineKeyboardButton("✅ Подать заявку", callback_data=f'order_{service_key}')], [InlineKeyboardButton("⬅️ К списку услуг", callback_data='show_services_menu')]]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
     if data.startswith('order_'):
         user_id = str(query.from_user.id)
-        category_key = data.split('_')[1]
+        category_key = data.split('_')
         category_name = CATEGORY_NAMES.get(category_key, "Неизвестная категория")
         user_states[user_id] = {'category': category_name, 'state': 'ask_name'}
         save_json_data(user_states, USER_STATES_FILE, states_lock)
-        await query.edit_message_text("Отлично. Прежде чем мы продолжим, пожалуйста, напишите, как к вам обращаться.")
+        await query.edit_message_text("Отлично. Пожалуйста, напишите, как к вам обращаться.")
         return
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -290,7 +282,6 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     current_state_data = user_states.get(user_id)
     
     if not current_state_data:
-        # Если пользователь не в процессе заявки, можно отправить подсказку
         await update.message.reply_text("Чтобы начать, воспользуйтесь командой /start")
         return
 
@@ -321,22 +312,12 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "--- НАЧАЛО ЗАЯВКИ ---\n\n"
             "**ВАЖНО:** Чтобы ответить клиенту, используйте функцию **«Ответить» (Reply)** на его пересланные сообщения."
         )
-        initial_keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Взять в работу", callback_data=f"take_{ticket_number}_{user_id}"),
-                InlineKeyboardButton("❌ Отклонить", callback_data=f"decline_{ticket_number}")
-            ]
-        ])
+        initial_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Взять в работу", callback_data=f"take_{ticket_number}_{user_id}"), InlineKeyboardButton("❌ Отклонить", callback_data=f"decline_{ticket_number}")]])
         
         try:
-            await context.bot.send_message(
-                chat_id=CHAT_ID_FOR_ALERTS, 
-                text=header_text, 
-                parse_mode='Markdown',
-                reply_markup=initial_keyboard
-            )
+            await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=header_text, parse_mode='Markdown', reply_markup=initial_keyboard)
         except Exception as e:
-            logger.error(f"Failed to send ticket header for {ticket_number} to the alert chat: {e}")
+            logger.error(f"Failed to send ticket header for {ticket_number}: {e}")
 
         reply_keyboard = [[ "✅ Завершить и отправить заявку" ]]
         await update.message.reply_text(
@@ -344,8 +325,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             f"Вашему обращению присвоен **номер {ticket_number}**.\n\n"
             "Теперь расскажите о вашей ситуации. Вы можете отправить:\n"
             "• Текстовые сообщения\n• Голосовые сообщения\n• Фото или сканы документов\n\n"
-            "Когда закончите, нажмите кнопку **'Завершить'** ниже. "
-            "Если передумаете, используйте команду /cancel.",
+            "Когда закончите, нажмите кнопку **'Завершить'** ниже.",
             reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
             parse_mode='Markdown'
         )
@@ -361,8 +341,8 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.error(f"Failed to send end-of-application message for ticket {ticket_number}: {e}")
 
             await update.message.reply_text(
-                f"✅ **Отлично! Ваша заявка №{ticket_number} полностью сформирована и передана специалисту.**\n\n"
-                "«Дирижер» изучит все материалы и скоро свяжется с вами для уточнения деталей.",
+                f"✅ **Отлично! Ваша заявка №{ticket_number} полностью сформирована.**\n\n"
+                "Специалист изучит все материалы и скоро свяжется с вами.",
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode='Markdown'
             )
@@ -372,40 +352,27 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             return
             
         try:
-            forwarded_message = await context.bot.forward_message(
-                chat_id=CHAT_ID_FOR_ALERTS,
-                from_chat_id=user_id,
-                message_id=update.message.message_id
-            )
-            # СОХРАНЯЕМ СВЯЗЬ: ID пересланного сообщения -> ID клиента
+            forwarded_message = await context.bot.forward_message(chat_id=CHAT_ID_FOR_ALERTS, from_chat_id=user_id, message_id=update.message.message_id)
             message_map[str(forwarded_message.message_id)] = user_id
             save_json_data(message_map, MESSAGE_MAP_FILE, message_map_lock)
-
         except Exception as e:
             logger.error(f"Could not forward message from user {user_id} for ticket {ticket_number}: {e}")
 
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    # Проверяем, что это ответ оператора в рабочем чате
     if str(update.message.chat_id) != str(CHAT_ID_FOR_ALERTS): return
     
     replied_message = update.message.reply_to_message
     if not replied_message: return
 
-    # Ищем ID клиента по ID сообщения, на которое ответили
     client_user_id = message_map.get(str(replied_message.message_id))
     
     if client_user_id:
         try:
-            # Копируем сообщение оператора и отправляем его клиенту
-            await context.bot.copy_message(
-                chat_id=int(client_user_id),
-                from_chat_id=update.message.chat_id,
-                message_id=update.message.message_id
-            )
+            await context.bot.copy_message(chat_id=int(client_user_id), from_chat_id=update.message.chat_id, message_id=update.message.message_id)
             logger.info(f"Relayed reply from operator {update.message.from_user.id} to client {client_user_id}")
         except Exception as e:
             logger.error(f"Failed to relay reply to client {client_user_id}: {e}")
-            await update.message.reply_text(f"⚠️ Не удалось доставить ответ клиенту. Ошибка: {e}")
+            await update.message.reply_text(f"⚠️ Не удалось доставить ответ. Ошибка: {e}")
 
 # --- ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА ---
 def main() -> None:
@@ -417,13 +384,7 @@ def main() -> None:
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CallbackQueryHandler(inline_button_handler))
     
-    # Обработчик ответов оператора (должен идти до основного message_handler)
-    application.add_handler(MessageHandler(
-        filters.REPLY & filters.Chat(chat_id=int(CHAT_ID_FOR_ALERTS)), 
-        reply_handler
-    ))
-
-    # Основной обработчик сообщений от клиентов
+    application.add_handler(MessageHandler(filters.REPLY & filters.Chat(chat_id=int(CHAT_ID_FOR_ALERTS)), reply_handler))
     application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
 
     logger.info("Application starting polling...")
@@ -432,3 +393,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
