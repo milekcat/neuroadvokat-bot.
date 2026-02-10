@@ -1,6 +1,7 @@
 import os
 import logging
 import json
+import re
 from datetime import datetime
 from threading import Lock
 from pathlib import Path
@@ -8,6 +9,7 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
+from telegram.helpers import escape_markdown
 
 # --- 1. НАСТРОЙКА ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -27,32 +29,24 @@ TICKET_COUNTER_FILE = DATA_DIR / "ticket_counter.txt"
 USER_STATES_FILE = DATA_DIR / "user_states.json"
 TICKETS_DB_FILE = DATA_DIR / "tickets.json"
 
-counter_lock = Lock()
-states_lock = Lock()
-tickets_lock = Lock()
+counter_lock, states_lock, tickets_lock = Lock(), Lock(), Lock()
 
 def load_json_data(file_path, lock):
     with lock:
-        if not file_path.exists():
-            return {}
+        if not file_path.exists(): return {}
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (json.JSONDecodeError, FileNotFoundError):
-            return {}
+            with open(file_path, 'r', encoding='utf-8') as f: return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError): return {}
 
 def save_json_data(data, file_path, lock):
     with lock:
         DATA_DIR.mkdir(parents=True, exist_ok=True)
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
+        with open(file_path, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=4)
 
 def get_and_increment_ticket_number():
     with counter_lock:
-        try:
-            number = int(TICKET_COUNTER_FILE.read_text().strip())
-        except (FileNotFoundError, ValueError):
-            number = 1023
+        try: number = int(TICKET_COUNTER_FILE.read_text().strip())
+        except (FileNotFoundError, ValueError): number = 1023
         next_number = number + 1
         TICKET_COUNTER_FILE.write_text(str(next_number))
         return next_number
@@ -62,78 +56,78 @@ tickets_db = load_json_data(TICKETS_DB_FILE, tickets_lock)
 
 # --- 3. ТЕКСТЫ И КОНСТАНТЫ ---
 LEGAL_POLICY_TEXT = """
-📄 **Политика конфиденциальности**
+📄 *Политика конфиденциальности*
 
-1\.  **Общие положения**
+1\.  *Общие положения*
     1\.1\. Настоящая Политика определяет порядок обработки и защиты персональных данных пользователей \(далее – Пользователи\) Сервиса «Нейро-Адвокат» \(далее – Сервис\)\.
-    1\.2\. **Использование Сервиса означает безоговорочное согласие Пользователя с настоящей Политикой и указанными в ней условиями обработки его персональной информации\.** В случае несогласия с этими условиями Пользователь должен воздержаться от использования Сервиса\.
+    1\.2\. *Использование Сервиса означает безоговорочное согласие Пользователя с настоящей Политикой и указанными в ней условиями обработки его персональной информации\.* В случае несогласия с этими условиями Пользователь должен воздержаться от использования Сервиса\.
 
-2\.  **Состав информации о пользователях**
+2\.  *Состав информации о пользователях*
     2\.1\. Сервис собирает и хранит следующие данные:
     \- Уникальный идентификатор пользователя \(Telegram User ID\)\.
     \- Имя пользователя, указанное им в Telegram и/или предоставленное Сервису\.
     \- Любые сообщения, файлы, изображения и голосовые сообщения, отправленные Пользователем в адрес Сервиса\.
 
-3\.  **Цели обработки данных**
+3\.  *Цели обработки данных*
     3\.1\. Данные собираются исключительно с целью предоставления Пользователю услуг Сервиса, а именно – для анализа его ситуации и подготовки проекта юридического документа\.
 
-4\.  **Обработка и передача данных**
+4\.  *Обработка и передача данных*
     4\.1\. Пользователь признает и соглашается, что его данные могут быть обработаны с использованием технологий искусственного интеллекта \(ИИ\)\.
     4\.2\. Администрация Сервиса принимает необходимые организационные и технические меры для защиты персональной информации Пользователя от неправомерного доступа\.
-    4\.3\. **Администрация Сервиса не несет ответственности за сохранность и конфиденциальность данных при их передаче через платформу Telegram, а также при их хранении на серверах хостинг\-провайдеров\.**
+    4\.3\. *Администрация Сервиса не несет ответственности за сохранность и конфиденциальность данных при их передаче через платформу Telegram, а также при их хранении на серверах хостинг\-провайдеров\.*
 
-5\.  **Изменение Политики**
+5\.  *Изменение Политики*
     5\.1\. Сервис имеет право вносить изменения в настоящую Политику в одностороннем порядке\. Новая редакция Политики вступает в силу с момента ее публикации, если иное не предусмотрено новой редакцией\.
 """
 
 LEGAL_DISCLAIMER_TEXT = """
-⚠️ **Отказ от ответственности \(Disclaimer\)**
+⚠️ *Отказ от ответственности \(Disclaimer\)*
 
-1\.  **Статус предоставляемой информации**
-    1\.1\. Сервис «Нейро-Адвокат» является **информационно\-технологическим продуктом**, использующим алгоритмы искусственного интеллекта \(ИИ\) и последующую верификацию специалистом для генерации **шаблонов \(проектов\)** юридических документов\.
-    1\.2\. **Услуги Сервиса и созданные им документы НЕ ЯВЛЯЮТСЯ юридической консультацией, юридическим заключением или адвокатской деятельностью\.**
+1\.  *Статус предоставляемой информации*
+    1\.1\. Сервис «Нейро-Адвокат» является *информационно\-технологическим продуктом*, использующим алгоритмы искусственного интеллекта \(ИИ\) и последующую верификацию специалистом для генерации *шаблонов \(проектов\)* юридических документов\.
+    1\.2\. *Услуги Сервиса и созданные им документы НЕ ЯВЛЯЮТСЯ юридической консультацией, юридическим заключением или адвокатской деятельностью\.*
 
-2\.  **Ограничение гарантий**
-    2\.1\. Сервис предоставляется на условиях **«КАК ЕСТЬ» \(“AS IS”\)** и **«КАК ДОСТУПНО» \(“AS AVAILABLE”\)\.
-    2\.2\. Администрация Сервиса **не предоставляет никаких гарантий** в отношении того, что: Сервис будет соответствовать требованиям Пользователя; результаты, которые могут быть получены с использованием Сервиса, будут точными, безошибочными или надежными; качество любого продукта, услуги или информации будет соответствовать ожиданиям Пользователя\.
+2\.  *Ограничение гарантий*
+    2\.1\. Сервис предоставляется на условиях *«КАК ЕСТЬ» \(“AS IS”\)* и *«КАК ДОСТУПНО» \(“AS AVAILABLE”\)*\.
+    2\.2\. Администрация Сервиса *не предоставляет никаких гарантий* в отношении того, что: Сервис будет соответствовать требованиям Пользователя; результаты, которые могут быть получены с использованием Сервиса, будут точными, безошибочными или надежными; качество любого продукта, услуги или информации будет соответствовать ожиданиям Пользователя\.
 
-3\.  **Ответственность Пользователя**
-    3\.1\. **Пользователь несет полную, исключительную и единоличную ответственность** за любое использование, изменение, адаптацию и подачу документов, созданных с помощью Сервиса\.
+3\.  *Ответственность Пользователя*
+    3\.1\. *Пользователь несет полную, исключительную и единоличную ответственность* за любое использование, изменение, адаптацию и подачу документов, созданных с помощью Сервиса\.
     3\.2\. Пользователь осознает риски, связанные с использованием ИИ, включая возможные неточности, несоответствия актуальному законодательству или судебной практике\.
-    3\.3\. **Перед любым практическим применением полученных документов Пользователь обязан самостоятельно проверить их содержание и/или проконсультироваться с квалифицированным юристом\.**
+    3\.3\. *Перед любым практическим применением полученных документов Пользователь обязан самостоятельно проверить их содержание и/или проконсультироваться с квалифицированным юристом\.*
 
-4\.  **Ограничение ответственности Сервиса**
-    4\.1\. Ни при каких обстоятельствах Администрация Сервиса или ее аффилированные лица **не несут ответственности** за любой прямой, косвенный, случайный, последующий или штрафной ущерб \(включая, но не ограничиваясь, упущенную выгоду, потерю данных или деловой репутации\), возникший в результате использования или невозможности использования Сервиса и полученных материалов\.
+4\.  *Ограничение ответственности Сервиса*
+    4\.1\. Ни при каких обстоятельствах Администрация Сервиса или ее аффилированные лица *не несут ответственности* за любой прямой, косвенный, случайный, последующий или штрафной ущерб \(включая, но не ограничиваясь, упущенную выгоду, потерю данных или деловой репутации\), возникший в результате использования или невозможности использования Сервиса и полученных материалов\.
 """
 
 LEGAL_OFERTA_TEXT = """
-📑 **Договор публичной оферты**
+📑 *Договор публичной оферты*
 
 Настоящий документ является официальным предложением \(публичной офертой\) Сервиса «Нейро-Адвокат» \(далее – Исполнитель\) и содержит все существенные условия предоставления информационных услуг\.
 
-1\.  **Термины и определения**
-    \- **Оферта** – настоящий документ\.
-    \- **Акцепт Оферты** – полное и безоговорочное принятие Оферты путем совершения действий, указанных в п\. 3\.2\.
-    \- **Заказчик** – любое лицо, совершившее Акцепт Оферты\.
-    \- **Услуга** – предоставление Заказчику доступа к информационно\-технологическому Сервису для создания проекта \(шаблона\) юридического документа на основе предоставленных Заказчиком данных с использованием ИИ и последующей проверкой специалистом\.
+1\.  *Термины и определения*
+    \- *Оферта* – настоящий документ\.
+    \- *Акцепт Оферты* – полное и безоговорочное принятие Оферты путем совершения действий, указанных в п\. 3\.2\.
+    \- *Заказчик* – любое лицо, совершившее Акцепт Оферты\.
+    \- *Услуга* – предоставление Заказчику доступа к информационно\-технологическому Сервису для создания проекта \(шаблона\) юридического документа на основе предоставленных Заказчиком данных с использованием ИИ и последующей проверкой специалистом\.
 
-2\.  **Предмет договора**
+2\.  *Предмет договора*
     2\.1\. Исполнитель обязуется оказать Заказчику Услугу, а Заказчик обязуется принять и оплатить ее\.
-    2\.2\. **Результатом Услуги является предоставление файла с проектом документа\.** Исполнитель не гарантирует достижение каких\-либо целей Заказчика \(например, выигрыш в суде, удовлетворение претензии и т\.д\.\)\.
+    2\.2\. *Результатом Услуги является предоставление файла с проектом документа\.* Исполнитель не гарантирует достижение каких\-либо целей Заказчика \(например, выигрыш в суде, удовлетворение претензии и т\.д\.\)\.
 
-3\.  **Порядок заключения договора и стоимость**
+3\.  *Порядок заключения договора и стоимость*
     3\.1\. Настоящий договор считается заключенным с момента Акцепта Оферты Заказчиком\.
-    3\.2\. **Акцептом Оферты является начало процесса создания обращения** \(нажатие кнопки «Создать обращение по этой теме» или аналогичной\)\.
-    3\.3\. Стоимость Услуги является фиксированной и составляет **3500 \(три тысячи пятьсот\) рублей**\.
+    3\.2\. *Акцептом Оферты является начало процесса создания обращения* \(нажатие кнопки «Создать обращение по этой теме» или аналогичной\)\.
+    3\.3\. Стоимость Услуги является фиксированной и составляет *3500 \(три тысячи пятьсот\) рублей*\.
 
-4\.  **Права и обязанности сторон**
+4\.  *Права и обязанности сторон*
     4\.1\. Исполнитель вправе в одностороннем порядке изменять условия настоящей Оферты\.
     4\.2\. Исполнитель вправе отказать в предоставлении Услуг любому лицу без объяснения причин\.
     4\.3\. Заказчик обязуется предоставлять достоверную информацию, необходимую для оказания Услуг\.
-    4\.4\. Оплата Услуг производится Заказчиком только после финального согласования макета документа\. **Возврат средств после отправки финальной версии документа в редактируемом формате \(\.docx\) не производится\.**
+    4\.4\. Оплата Услуг производится Заказчиком только после финального согласования макета документа\. *Возврат средств после отправки финальной версии документа в редактируемом формате \(\.docx\) не производится\.*
 
-5\.  **Ответственность сторон**
-    5\.1\. **Совокупная ответственность Исполнителя по настоящему Договору ограничивается суммой платежа, уплаченного Заказчиком за конкретную Услугу\.**
+5\.  *Ответственность сторон*
+    5\.1\. *Совокупная ответственность Исполнителя по настоящему Договору ограничивается суммой платежа, уплаченного Заказчиком за конкретную Услугу\.*
     5\.2\. Все споры решаются путем переговоров\. При невозможности достижения согласия споры передаются на рассмотрение в суд по месту нахождения Исполнителя\.
 """
 SERVICE_DESCRIPTIONS = {
@@ -220,15 +214,13 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     target_message = update.callback_query.message if update.callback_query else update.message
     if update.callback_query:
-        try:
-            await target_message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
-        except Exception: 
-            pass
+        try: await target_message.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
+        except Exception: pass
     else:
         await target_message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Обрабатывает команду /start."""
+    """Обрабатывает команду /start, сбрасывая состояние."""
     user_id = str(update.effective_user.id)
     if user_id in user_states:
         del user_states[user_id]
@@ -236,17 +228,17 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     await show_main_menu(update, context)
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Отменяет текущий процесс создания обращения, удаляя "мусорные" данные."""
+    """Отменяет текущий процесс, удаляя "мусорные" данные."""
     user_id = str(update.effective_user.id)
     state_data = user_states.get(user_id, {})
     
     if state_data.get('state') in ['ask_name', 'collecting_data']:
         ticket_id_to_delete = state_data.get('active_ticket')
         if ticket_id_to_delete and ticket_id_to_delete in tickets_db:
-            del tickets_db[ticket_id_to_delete]
-            save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+            with tickets_lock:
+                del tickets_db[ticket_id_to_delete]
+                save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
             logger.info(f"Orphaned ticket {ticket_id_to_delete} was deleted due to /cancel.")
-
         del user_states[user_id]
         save_json_data(user_states, USER_STATES_FILE, states_lock)
         await update.message.reply_text("Создание обращения отменено.", reply_markup=ReplyKeyboardRemove())
@@ -254,7 +246,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await update.message.reply_text("Нечего отменять. Вы уже в главном меню.", reply_markup=ReplyKeyboardRemove())
     await show_main_menu(update, context)
 
-# --- 5. ЛИЧНЫЙ КАБИНЕТ ПОЛЬЗОВАТЕЛЯ ---
+# --- 5. ЛИЧНЫЙ КАБИНЕТ ---
 
 async def my_tickets_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает пользователю список его обращений."""
@@ -267,10 +259,9 @@ async def my_tickets_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("✍️ Создать первое обращение", callback_data='show_services_menu')]]
     else:
         keyboard = []
-        sorted_tickets = sorted(user_tickets.items(), key=lambda item: int(item[0]), reverse=True)
-        for ticket_id, ticket_data in sorted_tickets:
+        for ticket_id, ticket_data in sorted(user_tickets.items(), key=lambda item: int(item[0]), reverse=True):
             status_emoji = STATUS_EMOJI.get(ticket_data.get('status', 'new'), '❓')
-            category = ticket_data.get('category', 'Без категории')
+            category = escape_markdown(ticket_data.get('category', 'Без категории'), 2)
             button_text = f"{status_emoji} Обращение №{ticket_id} ({category})"
             keyboard.append([InlineKeyboardButton(button_text, callback_data=f"view_ticket_{ticket_id}")])
     
@@ -281,7 +272,6 @@ async def my_tickets_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await target.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
     else:
         await target.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
-
 
 async def view_ticket_action(update: Update, context: ContextTypes.DEFAULT_TYPE, ticket_id: str):
     """Показывает детали обращения и историю чата."""
@@ -298,10 +288,10 @@ async def view_ticket_action(update: Update, context: ContextTypes.DEFAULT_TYPE,
     else:
         for msg in ticket_data['chat_history']:
             sender = "Вы" if msg['sender'] == 'user' else "Оператор"
-            escaped_text = msg['text'].replace('_', r'\_').replace('*', r'\*').replace('`', r'\`').replace('[', r'\[').replace(']', r'\]').replace('(', r'\(').replace(')', r'\)').replace('-', r'\-').replace('.', r'\.').replace('!', r'\!')
+            escaped_text = escape_markdown(msg['text'], 2)
             chat_history += f"*{sender}:* {escaped_text}\n"
     
-    status_text = STATUS_TEXT.get(ticket_data.get('status', 'new'), "Неизвестен")
+    status_text = escape_markdown(STATUS_TEXT.get(ticket_data.get('status', 'new'), "Неизвестен"), 2)
     
     user_states[user_id] = {'state': 'in_ticket_chat', 'active_ticket': ticket_id}
     save_json_data(user_states, USER_STATES_FILE, states_lock)
@@ -331,27 +321,17 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     data = query.data
 
-    routes = {
-        'my_tickets': my_tickets_action,
-        'view_ticket': lambda q, c: view_ticket_action(q, c, data.split('_')[2]),
-        'take': lambda q, c: take_decline_ticket_action(q, c, 'take'),
-        'decline': lambda q, c: take_decline_ticket_action(q, c, 'decline'),
-        'op': lambda q, c: operator_panel_action(q, c),
-        'legal': legal_menu_action,
-        'show_legal_menu': legal_menu_action,
-        'service': services_menu_action,
-        'show_services_menu': services_menu_action,
-        'faq': faq_menu_action,
-        'show_faq_menu': faq_menu_action,
-        'order': order_action,
-        'back_to_start': show_main_menu,
-    }
-    
-    prefix = data.split('_')[0]
-    handler = routes.get(prefix)
-    if handler:
-        await handler(query, context)
-
+    if data == 'my_tickets': await my_tickets_action(query, context)
+    elif data.startswith('view_ticket_'): await view_ticket_action(query, context, data.split('_')[2])
+    elif data.startswith('take_'): await take_decline_ticket_action(query, context, 'take')
+    elif data.startswith('decline_'): await take_decline_ticket_action(query, context, 'decline')
+    elif data.startswith('op_'): await operator_panel_action(query, context)
+    elif data == 'show_legal_menu' or data.startswith('legal_'): await legal_menu_action(query, context)
+    elif data == 'show_services_menu' or data.startswith('service_'): await services_menu_action(query, context)
+    elif data == 'show_faq_menu' or data.startswith('faq_'): await faq_menu_action(query, context)
+    elif data.startswith('order_'): await order_action(query, context)
+    elif data == 'back_to_start': await show_main_menu(query, context)
+    else: logger.warning(f"Unhandled callback_data: {data}")
 
 async def take_decline_ticket_action(query, context, action: str):
     """Обрабатывает взятие или отклонение обращения."""
@@ -365,31 +345,25 @@ async def take_decline_ticket_action(query, context, action: str):
             return
 
         if ticket_data['status'] != 'new':
-            operator_name = ticket_data.get('operator_name', 'другим оператором')
+            operator_name = escape_markdown(ticket_data.get('operator_name', 'другим оператором'), 2)
             status_text = STATUS_TEXT.get(ticket_data['status'], 'обработано')
-            await query.answer(f"Это обращение уже было {status_text} ({operator_name}).", show_alert=True)
+            await query.answer(f"Это обращение уже {status_text} ({operator_name}).", show_alert=True)
             return
 
         operator_name_raw = query.from_user.full_name
-        operator_name_escaped = operator_name_raw.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
         ticket_data['operator_id'] = str(query.from_user.id)
         ticket_data['operator_name'] = operator_name_raw
         
         if action == 'take':
             ticket_data['status'] = 'in_progress'
             notification_text = f"✅ *Статус обновлен:* Ваше обращение №{ticket_id} принято в работу."
-            operator_action_text = f"*✅ Взято в работу оператором {operator_name_escaped}*"
-            new_keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("💬 Запросить информацию", callback_data=f"op_ask_{ticket_id}_{client_user_id}")],
-                [InlineKeyboardButton("📄 Отправить на проверку", callback_data=f"op_review_{ticket_id}_{client_user_id}")],
-                [InlineKeyboardButton("🏁 Закрыть обращение", callback_data=f"op_close_{ticket_id}_{client_user_id}")]
-            ])
+            operator_action_text = f"*✅ Взято в работу оператором {escape_markdown(operator_name_raw, 2)}*"
+            new_keyboard = InlineKeyboardMarkup([[InlineKeyboardButton("💬 Запросить информацию", callback_data=f"op_ask_{ticket_id}_{client_user_id}")], [InlineKeyboardButton("📄 Отправить на проверку", callback_data=f"op_review_{ticket_id}_{client_user_id}")], [InlineKeyboardButton("🏁 Закрыть обращение", callback_data=f"op_close_{ticket_id}_{client_user_id}")]])
         else: # decline
             ticket_data['status'] = 'declined'
             notification_text = f"❌ К сожалению, мы не можем взять в работу ваше обращение №{ticket_id} в данный момент."
-            operator_action_text = f"*❌ Отклонено оператором {operator_name_escaped}*"
+            operator_action_text = f"*❌ Отклонено оператором {escape_markdown(operator_name_raw, 2)}*"
             new_keyboard = None
-        
         save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
 
     try:
@@ -397,76 +371,63 @@ async def take_decline_ticket_action(query, context, action: str):
     except Exception as e:
         logger.error(f"Failed to send status update to client {client_user_id}: {e}")
         
-    original_text = query.message.text_markdown_v2
-    new_text = f"{original_text}\n\n{operator_action_text}"
+    new_text = f"{query.message.text_markdown_v2}\n\n{operator_action_text}"
     await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN_V2, reply_markup=new_keyboard)
-
 
 async def operator_panel_action(query, context):
     """Действия с панели оператора."""
     parts = query.data.split('_')
     action, ticket_id, client_user_id = parts[1], parts[2], parts[3]
     
-    if action == 'close':
-        if ticket_id in tickets_db:
-            tickets_db[ticket_id]['status'] = 'closed'
-            save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
-        operator_name = query.from_user.full_name.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
+    message_text = ""
+    if action == 'ask':
+        message_text = f"Здравствуйте! По вашему обращению №{ticket_id} требуются уточнения. Специалист скоро напишет вам."
+    elif action == 'review':
+        message_text = f"📄 *Документ по обращению №{ticket_id} готов!* Мы отправили его вам на проверку."
+    elif action == 'close':
+        with tickets_lock:
+            if ticket_id in tickets_db:
+                tickets_db[ticket_id]['status'] = 'closed'
+                save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+        operator_name = escape_markdown(query.from_user.full_name, 2)
         new_text = f"{query.message.text_markdown_v2}\n\n*🏁 Обращение закрыто оператором {operator_name}*"
         await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN_V2, reply_markup=None)
         await context.bot.send_message(chat_id=int(client_user_id), text=f"✅ Ваше обращение №{ticket_id} успешно завершено. Спасибо!")
         return
 
-    message_text = ""
-    alert_text = ""
-    if action == 'ask':
-        message_text = f"Здравствуйте! По вашему обращению №{ticket_id} требуются уточнения. Специалист скоро напишет вам."
-        alert_text = "✅ Уведомление с запросом информации отправлено!"
-    elif action == 'review':
-        message_text = f"📄 *Документ по обращению №{ticket_id} готов!* Мы отправили его вам на проверку."
-        alert_text = "✅ Уведомление о готовности отправлено!"
-        
     try:
-        if message_text:
-            await context.bot.send_message(chat_id=int(client_user_id), text=message_text, parse_mode=ParseMode.MARKDOWN_V2)
-        await query.answer(alert_text, show_alert=True)
+        if message_text: await context.bot.send_message(chat_id=int(client_user_id), text=message_text, parse_mode=ParseMode.MARKDOWN_V2)
+        await query.answer("✅ Уведомление клиенту отправлено!", show_alert=True)
     except Exception as e:
         await query.answer("❌ Не удалось отправить сообщение клиенту.", show_alert=True)
 
-
 async def legal_menu_action(query, context):
     """Навигация по юридическому меню."""
-    data = query.data
-    if data == 'show_legal_menu':
+    if query.data == 'show_legal_menu':
         keyboard = [[InlineKeyboardButton("📄 Политика конфиденциальности", callback_data='legal_policy')], [InlineKeyboardButton("⚠️ Отказ от ответственности", callback_data='legal_disclaimer')], [InlineKeyboardButton("📑 Договор публичной оферты", callback_data='legal_oferta')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
         await query.edit_message_text("Выберите документ:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(data, "Документ не найден.")
+        text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(query.data, "Документ не найден.")
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку документов", callback_data='show_legal_menu')]]), parse_mode=ParseMode.MARKDOWN_V2)
-
 
 async def services_menu_action(query, context):
     """Навигация по меню услуг."""
-    data = query.data
-    if data == 'show_services_menu':
-        keyboard = [[InlineKeyboardButton(f"{v}", callback_data=f'service_{k}')] for k, v in CATEGORY_NAMES.items()]
+    if query.data == 'show_services_menu':
+        keyboard = [[InlineKeyboardButton(escape_markdown(name, 2), callback_data=f'service_{key}')] for key, name in CATEGORY_NAMES.items()]
         keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
         await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        service_key = data.split('_')[1]
+        service_key = query.data.split('_')[1]
         await query.edit_message_text(SERVICE_DESCRIPTIONS[service_key], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Создать обращение по этой теме", callback_data=f'order_{service_key}')]]), parse_mode=ParseMode.MARKDOWN_V2)
-
 
 async def faq_menu_action(query, context):
     """Навигация по FAQ."""
-    data = query.data
-    if data == 'show_faq_menu':
+    if query.data == 'show_faq_menu':
         keyboard = [[InlineKeyboardButton("Как я получу и оплачу документ?", callback_data='faq_payment_and_delivery')], [InlineKeyboardButton("Сколько стоят услуги?", callback_data='faq_price')], [InlineKeyboardButton("Это просто шаблон?", callback_data='faq_template')], [InlineKeyboardButton("Сколько времени это займет?", callback_data='faq_timing')], [InlineKeyboardButton("Есть ли гарантии?", callback_data='faq_guarantee')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
         await query.edit_message_text("Выберите вопрос:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        faq_key = data.split('_', 1)[1]
+        faq_key = query.data.split('_', 1)[1]
         await query.edit_message_text(FAQ_ANSWERS[faq_key], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку вопросов", callback_data='show_faq_menu')]]), parse_mode=ParseMode.MARKDOWN_V2)
-
 
 async def order_action(query, context):
     """Начало создания обращения."""
@@ -475,7 +436,6 @@ async def order_action(query, context):
     user_states[user_id] = {'category': CATEGORY_NAMES[category_key], 'state': 'ask_name'}
     save_json_data(user_states, USER_STATES_FILE, states_lock)
     await query.edit_message_text("Отлично. Прежде чем мы продолжим, пожалуйста, напишите, как к вам обращаться.")
-
 
 # --- 7. ОБРАБОТЧИКИ СООБЩЕНИЙ ---
 
@@ -486,15 +446,15 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     if current_state == 'in_ticket_chat':
         active_ticket_id = user_states[user_id]['active_ticket']
-        ticket_data = tickets_db.get(active_ticket_id)
-        if not ticket_data: return
+        if active_ticket_id not in tickets_db: return
         
         text_to_save = update.message.text or "[Файл или нетекстовое сообщение]"
-        ticket_data.setdefault('chat_history', []).append({"sender": "user", "text": text_to_save, "timestamp": datetime.now().isoformat()})
-        save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+        with tickets_lock:
+            tickets_db[active_ticket_id].setdefault('chat_history', []).append({"sender": "user", "text": text_to_save, "timestamp": datetime.now().isoformat()})
+            save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
 
-        escaped_text = text_to_save.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
-        operator_message = f"💬 Новое сообщение по [обращению №{active_ticket_id}](t_id://{active_ticket_id}):\n\n*Клиент:* {escaped_text}"
+        escaped_text = escape_markdown(text_to_save, 2)
+        operator_message = f"💬 Новое сообщение по ОБРАЩЕНИЮ №{active_ticket_id}:\n\n*Клиент:* {escaped_text}"
         await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=operator_message, parse_mode=ParseMode.MARKDOWN_V2)
         await update.message.reply_text("Сообщение отправлено оператору.", quote=True)
         return
@@ -507,23 +467,24 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         user_states[user_id].update({'state': 'collecting_data', 'active_ticket': ticket_id})
         save_json_data(user_states, USER_STATES_FILE, states_lock)
         
-        tickets_db[ticket_id] = {"user_id": user_id, "user_name": name, "category": user_states[user_id]['category'], "status": "new", "creation_date": datetime.now().isoformat(), "chat_history": []}
-        save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+        with tickets_lock:
+            tickets_db[ticket_id] = {"user_id": user_id, "user_name": name, "category": user_states[user_id]['category'], "status": "new", "creation_date": datetime.now().isoformat(), "chat_history": []}
+            save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
 
-        header_text = (f"🔔 *[ОБРАЩЕНИЕ №{ticket_id}](t_id://{ticket_id})*\n\n"
-                       f"*Клиент:* {name.replace('_', r'\_').replace('*', r'\*')}\n"
-                       f"*Категория:* {user_states[user_id]['category']}\n\n"
+        header_text = (f"🔔 *ОБРАЩЕНИЕ №{ticket_id}*\n\n"
+                       f"*Клиент:* {escape_markdown(name, 2)}\n"
+                       f"*Категория:* {escape_markdown(user_states[user_id]['category'], 2)}\n\n"
                        "*ВАЖНО:* Отвечайте на *это* сообщение, чтобы общаться с клиентом.")
         await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=header_text, parse_mode=ParseMode.MARKDOWN_V2, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Взять в работу", callback_data=f"take_{ticket_id}_{user_id}"), InlineKeyboardButton("❌ Отклонить", callback_data=f"decline_{ticket_id}_{user_id}")]]))
 
-        await update.message.reply_text(f"Приятно познакомиться, {name}!\n\nВашему обращению присвоен *номер {ticket_id}*\.\n\nТеперь расскажите о вашей ситуации, отправляя сообщения, фото и файлы\. Когда закончите, нажмите кнопку ниже\.", reply_markup=ReplyKeyboardMarkup([["✅ Завершить и отправить обращение"]], one_time_keyboard=True, resize_keyboard=True), parse_mode=ParseMode.MARKDOWN_V2)
+        await update.message.reply_text(f"Приятно познакомиться, {escape_markdown(name, 2)}\\!\n\nВашему обращению присвоен *номер {ticket_id}*\\.\n\nТеперь расскажите о вашей ситуации, отправляя сообщения, фото и файлы\\. Когда закончите, нажмите кнопку ниже\\.", reply_markup=ReplyKeyboardMarkup([["✅ Завершить и отправить обращение"]], one_time_keyboard=True, resize_keyboard=True), parse_mode=ParseMode.MARKDOWN_V2)
         return
 
     elif current_state == 'collecting_data':
         ticket_id = user_states[user_id]['active_ticket']
         if update.message.text == "✅ Завершить и отправить обращение":
             await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=f"--- КОНЕЦ ПЕРВОНАЧАЛЬНОГО ОБРАЩЕНИЯ №{ticket_id} ---")
-            await update.message.reply_text(f"✅ *Отлично\\! Ваше обращение №{ticket_id} сформировано*\.\n\nОператор изучит материалы\. Вы можете следить за статусом и общаться в 'Личном кабинете'\.", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
+            await update.message.reply_text(f"✅ *Отлично\\! Ваше обращение №{ticket_id} сформировано*\\.\n\nОператор изучит материалы\\. Вы можете следить за статусом и общаться в 'Личном кабинете'\\.", reply_markup=ReplyKeyboardRemove(), parse_mode=ParseMode.MARKDOWN_V2)
             del user_states[user_id]
             save_json_data(user_states, USER_STATES_FILE, states_lock)
         else:
@@ -532,44 +493,40 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     await show_main_menu(update, context)
 
-
 async def reply_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает ответы оператора в рабочем чате."""
     if str(update.message.chat_id) != str(CHAT_ID_FOR_ALERTS) or not update.message.reply_to_message:
         return
         
-    ticket_id = None
-    for entity in update.message.reply_to_message.entities:
-        if entity.type == 'text_link' and entity.url.startswith('t_id://'):
-            ticket_id = entity.url.split('//')[1]
-            break
-
-    if not ticket_id:
-        replied_text = update.message.reply_to_message.text
-        if replied_text and "ОБРАЩЕНИЕ №" in replied_text:
-            try:
-                ticket_id = replied_text.split("ОБРАЩЕНИЕ №")[1].split("\n")[0].strip()
-            except IndexError:
-                pass
+    replied_text = update.message.reply_to_message.text or update.message.reply_to_message.caption
+    if not replied_text:
+        await update.message.reply_text("⚠️ Не удалось определить номер обращения. Отвечайте на сообщение с текстом.", quote=True)
+        return
     
-    if not ticket_id or ticket_id not in tickets_db:
+    match = re.search(r"ОБРАЩЕНИЕ №(\d+)", replied_text)
+    if not match:
         await update.message.reply_text("⚠️ Не удалось определить номер обращения из цитаты.", quote=True)
         return
 
+    ticket_id = match.group(1)
+    if ticket_id not in tickets_db:
+        await update.message.reply_text("⚠️ Обращение с таким номером не найдено в базе.", quote=True)
+        return
+        
     ticket_data = tickets_db[ticket_id]
     client_user_id = ticket_data['user_id']
     operator_text = update.message.text
     
-    ticket_data.setdefault('chat_history', []).append({"sender": "operator", "text": operator_text, "timestamp": datetime.now().isoformat()})
-    save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+    with tickets_lock:
+        ticket_data.setdefault('chat_history', []).append({"sender": "operator", "text": operator_text, "timestamp": datetime.now().isoformat()})
+        save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
     
     try:
-        escaped_operator_text = operator_text.replace('_', r'\_').replace('*', r'\*').replace('`', r'\`')
+        escaped_operator_text = escape_markdown(operator_text, 2)
         await context.bot.send_message(chat_id=int(client_user_id), text=f"*Оператор по обращению №{ticket_id}:*\n{escaped_operator_text}", parse_mode=ParseMode.MARKDOWN_V2)
         await update.message.reply_text("✅ Ответ клиенту доставлен.", quote=True)
     except Exception as e:
         logger.error(f"Failed to relay reply to client {client_user_id}: {e}")
-
 
 # --- 8. ЗАПУСК БОТА ---
 def main() -> None:
@@ -593,6 +550,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
