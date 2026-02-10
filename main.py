@@ -248,7 +248,17 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def my_tickets_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показывает пользователю список его обращений."""
-    user_id = str(update.effective_user.id)
+    # ИСПРАВЛЕНО: Корректно получаем пользователя из команды или callback'а
+    if update.callback_query:
+        user = update.callback_query.from_user
+        target_message = update.callback_query.message
+        is_callback = True
+    else:
+        user = update.effective_user
+        target_message = update.message
+        is_callback = False
+    
+    user_id = str(user.id)
     user_tickets = {k: v for k, v in tickets_db.items() if v.get('user_id') == user_id}
 
     message_text = "🗂️ *Ваши обращения:*"
@@ -265,15 +275,14 @@ async def my_tickets_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
     
-    target = update.callback_query.message if update.callback_query else update.message
-    if update.callback_query:
-        await target.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
+    if is_callback:
+        await target_message.edit_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
     else:
-        await target.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
+        await target_message.reply_text(message_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def view_ticket_action(update: Update, context: ContextTypes.DEFAULT_TYPE, ticket_id: str):
     """Показывает детали обращения и историю чата."""
-    user_id = str(update.effective_user.id)
+    user_id = str(update.callback_query.from_user.id)
     ticket_data = tickets_db.get(ticket_id)
 
     if not ticket_data or ticket_data.get('user_id') != user_id:
@@ -319,6 +328,7 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
     await query.answer()
     data = query.data
 
+    # ИСПРАВЛЕНО: Простая и надежная маршрутизация
     if data == 'my_tickets': await my_tickets_action(query, context)
     elif data.startswith('view_ticket_'): await view_ticket_action(query, context, data.split('_')[2])
     elif data.startswith('take_'): await take_decline_ticket_action(query, context, 'take')
@@ -356,12 +366,11 @@ async def take_decline_ticket_action(query, context, action: str):
             ticket_data['status'] = 'in_progress'
             notification_text = f"✅ *Статус обновлен:* Ваше обращение №{ticket_id} принято в работу."
             operator_action_text = f"*✅ Взято в работу оператором {escape_markdown(operator_name_raw, 2)}*"
-            keyboard_buttons = [
+            new_keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("💬 Запросить информацию", callback_data=f"op_ask_{ticket_id}_{client_user_id}")],
                 [InlineKeyboardButton("📄 Отправить на проверку", callback_data=f"op_review_{ticket_id}_{client_user_id}")],
                 [InlineKeyboardButton("🏁 Закрыть обращение", callback_data=f"op_close_{ticket_id}_{client_user_id}")]
-            ]
-            new_keyboard = InlineKeyboardMarkup(keyboard_buttons)
+            ])
         else: # decline
             ticket_data['status'] = 'declined'
             notification_text = f"❌ К сожалению, мы не можем взять в работу ваше обращение №{ticket_id} в данный момент."
@@ -422,7 +431,7 @@ async def services_menu_action(query, context):
     if data == 'show_services_menu':
         keyboard = [[InlineKeyboardButton(name, callback_data=f'service_{key}')] for key, name in CATEGORY_NAMES.items()]
         keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
-        await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
     else:
         service_key = data.split('_')[1]
         await query.edit_message_text(SERVICE_DESCRIPTIONS[service_key], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Создать обращение по этой теме", callback_data=f'order_{service_key}')]]), parse_mode=ParseMode.MARKDOWN_V2)
@@ -558,4 +567,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
