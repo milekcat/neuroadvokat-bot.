@@ -1,7 +1,10 @@
 import os
 import logging
+import json
 from datetime import datetime
 from threading import Lock
+from pathlib import Path
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
@@ -10,32 +13,53 @@ logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # --- НАСТРОЙКА ---
-# Используем имя переменной, которое гарантированно работает
 NEURO_ADVOCAT_TOKEN = os.environ.get('NEURO_ADVOCAT_TOKEN')
 CHAT_ID_FOR_ALERTS = os.environ.get('CHAT_ID_FOR_ALERTS')
 TELEGRAM_CHANNEL_URL = os.environ.get('TELEGRAM_CHANNEL_URL')
 
-# Проверяем, что ключевые переменные существуют.
 if not NEURO_ADVOCAT_TOKEN or not CHAT_ID_FOR_ALERTS:
     logger.critical("FATAL ERROR: A required environment variable was NOT found.")
     logger.critical("Please ensure 'NEURO_ADVOCAT_TOKEN' and 'CHAT_ID_FOR_ALERTS' are set correctly.")
     exit(1)
 
+# --- ПУТИ К ФАЙЛАМ В ПОСТОЯННОМ ХРАНИЛИЩЕ ---
+DATA_DIR = Path("/app/data")
+TICKET_COUNTER_FILE = DATA_DIR / "ticket_counter.txt"
+USER_STATES_FILE = DATA_DIR / "user_states.json"
+
 # --- СИСТЕМА НУМЕРАЦИИ ЗАЯВОК ---
-TICKET_COUNTER_FILE = "ticket_counter.txt"
 counter_lock = Lock()
 
 def get_and_increment_ticket_number():
     with counter_lock:
         try:
-            with open(TICKET_COUNTER_FILE, 'r') as f:
-                number = int(f.read().strip())
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            number = int(TICKET_COUNTER_FILE.read_text().strip())
         except (FileNotFoundError, ValueError):
             number = 1023
         next_number = number + 1
-        with open(TICKET_COUNTER_FILE, 'w') as f:
-            f.write(str(next_number))
+        TICKET_COUNTER_FILE.write_text(str(next_number))
         return next_number
+
+# --- УПРАВЛЕНИЕ СОСТОЯНИЯМИ ПОЛЬЗОВАТЕЛЕЙ ---
+states_lock = Lock()
+
+def load_user_states():
+    with states_lock:
+        try:
+            DATA_DIR.mkdir(parents=True, exist_ok=True)
+            with open(USER_STATES_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+def save_user_states(states):
+    with states_lock:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(USER_STATES_FILE, 'w', encoding='utf-8') as f:
+            json.dump(states, f, ensure_ascii=False, indent=4)
+
+user_states = load_user_states()
 
 # --- ТЕКСТЫ И КОНСТАНТЫ ---
 SERVICE_DESCRIPTIONS = {
@@ -105,11 +129,7 @@ FAQ_ANSWERS = {
 }
 CATEGORY_NAMES = {"civil": "Гражданское право", "family": "Семейное право", "housing": "Жилищное право", "military": "Военное право", "admin": "Административное право", "business": "Малый бизнес"}
 
-# Хранилище состояний
-user_states = {}
-
 # --- ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ---
-
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("✍️ Обратиться", callback_data='show_services_menu')],
@@ -129,43 +149,50 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
 # --- ОБРАБОТЧИКИ КОМАНД ---
-
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+    user_id = str(update.effective_user.id)
     if user_id in user_states:
         del user_states[user_id]
+        save_user_states(user_states)
+        logger.info(f"User {user_id} cancelled an existing state and restarted.")
     await update.message.reply_text("Перезапускаю бота...", reply_markup=ReplyKeyboardRemove())
     await show_main_menu(update, context)
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+    user_id = str(update.effective_user.id)
     if user_id in user_states:
         del user_states[user_id]
+        save_user_states(user_states)
         await update.message.reply_text("Подача заявки отменена.", reply_markup=ReplyKeyboardRemove())
+        logger.info(f"User {user_id} cancelled the application process.")
     else:
         await update.message.reply_text("Нечего отменять. Вы уже в главном меню.", reply_markup=ReplyKeyboardRemove())
     await show_main_menu(update, context)
 
 # --- ОБРАБОТЧИКИ КНОПОК И СООБЩЕНИЙ ---
-
 async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     
+    user_id = str(query.from_user.id)
+
     if query.data.startswith('take_'):
         parts = query.data.split('_')
-        ticket_number, client_user_id = parts[1], int(parts[2])
+        ticket_number, client_user_id_str = parts[1], parts[2]
         try:
             await context.bot.send_message(
-                chat_id=client_user_id,
+                chat_id=int(client_user_id_str),
                 text=f"✅ **Статус обновлен:** Ваша заявка №{ticket_number} принята в работу. Специалист уже изучает ваши материалы и скоро свяжется с вами.",
                 parse_mode='Markdown'
             )
+            logger.info(f"Operator {user_id} took ticket {ticket_number} for client {client_user_id_str}.")
         except Exception as e:
-            logger.error(f"Failed to send status update to client {client_user_id}: {e}")
+            logger.error(f"Failed to send status update to client {client_user_id_str}: {e}")
+        
         original_text = query.message.text_markdown_v2
         operator_name = query.from_user.full_name
         new_text = f"{original_text}\n\n*✅ Взято в работу оператором {operator_name}*"
+        
         await query.edit_message_text(new_text, parse_mode='MarkdownV2', reply_markup=None)
         return
 
@@ -175,10 +202,16 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         original_text = query.message.text_markdown_v2
         operator_name = query.from_user.full_name
         new_text = f"{original_text}\n\n*❌ Отклонено оператором {operator_name}*"
+        
+        logger.info(f"Operator {user_id} declined ticket {ticket_number}.")
+        
         await query.edit_message_text(new_text, parse_mode='MarkdownV2', reply_markup=None)
         return
         
     if query.data == 'back_to_start':
+        if user_id in user_states:
+            del user_states[user_id]
+            save_user_states(user_states)
         await show_main_menu(update, context)
         return
         
@@ -221,27 +254,28 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
             [InlineKeyboardButton("✅ Подать заявку по этой теме", callback_data=f'order_{service_key}')],
             [InlineKeyboardButton("⬅️ К списку услуг", callback_data='show_services_menu')]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
         return
 
     if query.data.startswith('order_'):
-        user_id = query.from_user.id
         category_key = query.data.split('_')[1]
         category_name = CATEGORY_NAMES.get(category_key, "Неизвестная категория")
         user_states[user_id] = {'category': category_name, 'state': 'ask_name'}
+        save_user_states(user_states)
+        logger.info(f"User {user_id} started an application in category '{category_name}'.")
         await query.edit_message_text("Отлично. Прежде чем мы продолжим, пожалуйста, напишите, как к вам обращаться.")
         return
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user_id = update.effective_user.id
+    user_id = str(update.effective_user.id)
     current_state_data = user_states.get(user_id)
-
+    
     if not current_state_data:
         await update.message.reply_text("Чтобы начать, воспользуйтесь командой /start")
         return
 
     state = current_state_data.get('state')
-
+    
     if state == 'ask_name':
         if not update.message.text or update.message.text.startswith('/'):
             await update.message.reply_text("Пожалуйста, отправьте ваше имя текстом.")
@@ -256,16 +290,18 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         timestamp = datetime.now().strftime('%d.%m.%Y %H:%M')
         ticket_number = get_and_increment_ticket_number()
         user_states[user_id]['ticket_number'] = ticket_number
+        
+        save_user_states(user_states)
+        logger.info(f"User {user_id} (name: {name}) received ticket number {ticket_number}.")
 
         header_text = (
-            f"🔔 *ЗАЯВКА №{ticket_number}*\n\n"
+            f"🔔 **ЗАЯВКА №{ticket_number}**\n\n"
             f"**Время:** `{timestamp}`\n"
             f"**Категория:** `{current_state_data['category']}`\n\n"
             f"**Клиент:** `{name}`\n"
             f"**Контакт:** [Написать клиенту]({user_link})\n\n"
-            "\\-\\-\\- НАЧАЛО ЗАЯВКИ \\-\\-\\-"
+            "--- НАЧАЛО ЗАЯВКИ ---"
         )
-
         operator_keyboard = [
             [
                 InlineKeyboardButton("✅ Взять в работу", callback_data=f"take_{ticket_number}_{user_id}"),
@@ -273,12 +309,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             ]
         ]
         
-        await context.bot.send_message(
-            chat_id=CHAT_ID_FOR_ALERTS, 
-            text=header_text, 
-            parse_mode='MarkdownV2',
-            reply_markup=InlineKeyboardMarkup(operator_keyboard)
-        )
+        try:
+            await context.bot.send_message(
+                chat_id=CHAT_ID_FOR_ALERTS, 
+                text=header_text, 
+                parse_mode='Markdown',
+                reply_markup=InlineKeyboardMarkup(operator_keyboard)
+            )
+            logger.info(f"Sent ticket {ticket_number} to the alert chat.")
+        except Exception as e:
+            logger.error(f"Failed to send ticket {ticket_number} to the alert chat: {e}")
+
         
         reply_keyboard = [[ "✅ Завершить и отправить заявку" ]]
         await update.message.reply_text(
@@ -291,14 +332,21 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "Когда закончите, нажмите кнопку **'Завершить'** ниже. "
             "Если передумаете, используйте команду /cancel.",
             reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
+            parse_mode='Markdown'
         )
 
     elif state == 'collecting_data':
         ticket_number = current_state_data.get('ticket_number', 'N/A')
+        
         if update.message.text == "✅ Завершить и отправить заявку":
             footer_text = f"--- КОНЕЦ ЗАЯВКИ №{ticket_number} ---"
-            await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=footer_text)
             
+            try:
+                await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=footer_text)
+                logger.info(f"Application {ticket_number} was finalized by user {user_id}.")
+            except Exception as e:
+                logger.error(f"Failed to send end-of-application message for ticket {ticket_number}: {e}")
+
             await update.message.reply_text(
                 f"✅ **Отлично! Ваша заявка №{ticket_number} полностью сформирована и передана специалисту.**\n\n"
                 "«Дирижер» изучит все материалы и скоро свяжется с вами для уточнения деталей.\n\n"
@@ -306,24 +354,32 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode='Markdown'
             )
+            
             del user_states[user_id]
+            save_user_states(user_states)
             return
-
-        await context.bot.forward_message(
-            chat_id=CHAT_ID_FOR_ALERTS,
-            from_chat_id=user_id,
-            message_id=update.message.message_id
-        )
+            
+        try:
+            await context.bot.forward_message(
+                chat_id=CHAT_ID_FOR_ALERTS,
+                from_chat_id=user_id,
+                message_id=update.message.message_id
+            )
+        except Exception as e:
+            logger.error(f"Could not forward message from user {user_id} for ticket {ticket_number}: {e}")
 
 # --- ОСНОВНАЯ ФУНКЦИЯ ЗАПУСКА ---
 def main() -> None:
     logger.info("Starting bot...")
+    
     application = Application.builder().token(NEURO_ADVOCAT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("cancel", cancel_command))
     application.add_handler(CallbackQueryHandler(inline_button_handler))
-    application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, message_handler))
+    
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    application.add_handler(MessageHandler(filters.PHOTO | filters.VOICE | filters.AUDIO | filters.DOCUMENT, message_handler))
 
     application.run_polling()
     logger.info("Bot has been stopped.")
