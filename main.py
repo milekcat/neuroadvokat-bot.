@@ -230,7 +230,7 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     
     if state_data.get('state') in ['ask_name', 'collecting_data']:
         ticket_id_to_delete = state_data.get('active_ticket')
-        if ticket_id_to_delete and ticket_id_to_delete in tickets_db:
+        if ticket_id_to_delete:
             with tickets_lock:
                 if ticket_id_to_delete in tickets_db:
                     del tickets_db[ticket_id_to_delete]
