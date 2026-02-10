@@ -16,6 +16,7 @@ if not all([NEURO_ADVOCAT_TOKEN, TELEGRAM_CHANNEL_URL]):
     logger.critical("FATAL ERROR: One or more environment variables are missing.")
     exit(1)
 
+
 # --- 2. ТЕКСТЫ И КОНСТАНТЫ (ПОЛНОСТЬЮ ЗАПОЛНЕНЫ) ---
 SERVICE_DESCRIPTIONS = {
     "civil": (
@@ -159,3 +160,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
