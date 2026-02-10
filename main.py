@@ -221,10 +221,6 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Обрабатывает команду /start, сбрасывая состояние."""
-    user_id = str(update.effective_user.id)
-    if user_id in user_states:
-        del user_states[user_id]
-        save_json_data(user_states, USER_STATES_FILE, states_lock)
     await show_main_menu(update, context)
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -412,7 +408,7 @@ async def legal_menu_action(query, context):
         keyboard = [[InlineKeyboardButton("📄 Политика конфиденциальности", callback_data='legal_policy')], [InlineKeyboardButton("⚠️ Отказ от ответственности", callback_data='legal_disclaimer')], [InlineKeyboardButton("📑 Договор публичной оферты", callback_data='legal_oferta')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
         await query.edit_message_text("Выберите документ:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
-        text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(data, "Документ не найден.")
+        text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(query.data, "Документ не найден.")
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку документов", callback_data='show_legal_menu')]]), parse_mode=ParseMode.MARKDOWN_V2)
 
 async def services_menu_action(query, context):
@@ -557,5 +553,6 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
 
