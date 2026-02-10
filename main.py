@@ -54,7 +54,7 @@ def get_and_increment_ticket_number():
 user_states = load_json_data(USER_STATES_FILE, states_lock)
 tickets_db = load_json_data(TICKETS_DB_FILE, tickets_lock)
 
-# --- 3. ТЕКСТЫ И КОНСТАНТЫ (ИСПРАВЛЕНО ЭКРАНИРОВАНИЕ) ---
+# --- 3. ТЕКСТЫ И КОНСТАНТЫ ---
 LEGAL_POLICY_TEXT = """
 📄 *Политика конфиденциальности*
 
@@ -356,7 +356,6 @@ async def take_decline_ticket_action(query, context, action: str):
             ticket_data['status'] = 'in_progress'
             notification_text = f"✅ *Статус обновлен:* Ваше обращение №{ticket_id} принято в работу."
             operator_action_text = f"*✅ Взято в работу оператором {escape_markdown(operator_name_raw, 2)}*"
-            # ИСПРАВЛЕНО: Разбиваем создание клавиатуры на несколько строк для читаемости
             keyboard_buttons = [
                 [InlineKeyboardButton("💬 Запросить информацию", callback_data=f"op_ask_{ticket_id}_{client_user_id}")],
                 [InlineKeyboardButton("📄 Отправить на проверку", callback_data=f"op_review_{ticket_id}_{client_user_id}")],
@@ -423,7 +422,7 @@ async def services_menu_action(query, context):
     if data == 'show_services_menu':
         keyboard = [[InlineKeyboardButton(name, callback_data=f'service_{key}')] for key, name in CATEGORY_NAMES.items()]
         keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
-        await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
+        await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard))
     else:
         service_key = data.split('_')[1]
         await query.edit_message_text(SERVICE_DESCRIPTIONS[service_key], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Создать обращение по этой теме", callback_data=f'order_{service_key}')]]), parse_mode=ParseMode.MARKDOWN_V2)
@@ -559,3 +558,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
