@@ -54,7 +54,7 @@ def get_and_increment_ticket_number():
 user_states = load_json_data(USER_STATES_FILE, states_lock)
 tickets_db = load_json_data(TICKETS_DB_FILE, tickets_lock)
 
-# --- 3. ТЕКСТЫ И КОНСТАНТЫ ---
+# --- 3. ТЕКСТЫ И КОНСТАНТЫ (ИСПРАВЛЕНО ЭКРАНИРОВАНИЕ) ---
 LEGAL_POLICY_TEXT = """
 📄 *Политика конфиденциальности*
 
@@ -154,7 +154,7 @@ SERVICE_DESCRIPTIONS = {
         "*Мы готовим:*\n"
         "• *Жалобы:* в Управляющую компанию, Жилищную инспекцию, Роспотребнадзор\.\n"
         "• *Исковые заявления:* об определении порядка пользования квартирой, о нечинении препятствий\.\n"
-        "• *Проекты договоров:* купли-продажи, дарения, аренды \(найма\) с учетом ваших интересов\."
+        "• *Проекты договоров:* купли\-продажи, дарения, аренды \(найма\) с учетом ваших интересов\."
     ),
     "military": (
         "🛡️ *Военное право и соцобеспечение: Поддержка для защитников*\n\n"
@@ -177,7 +177,7 @@ SERVICE_DESCRIPTIONS = {
         "Для фрилансеров и небольших компаний, которым нужны надежные документы, но юрист в штате невыгоден\.\n\n"
         "*Мы готовим:*\n"
         "• *Проекты договоров:* оказания услуг, подряда, поставки с защитой ваших интересов \(например, с условием об оплате\)\.\n"
-        "• *Претензии:* к контрагентам-должникам для взыскания оплаты\.\n"
+        "• *Претензии:* к контрагентам\-должникам для взыскания оплаты\.\n"
         "• *Акты выполненных работ* и другие сопроводительные документы\."
     )
 }
@@ -356,11 +356,13 @@ async def take_decline_ticket_action(query, context, action: str):
             ticket_data['status'] = 'in_progress'
             notification_text = f"✅ *Статус обновлен:* Ваше обращение №{ticket_id} принято в работу."
             operator_action_text = f"*✅ Взято в работу оператором {escape_markdown(operator_name_raw, 2)}*"
-            new_keyboard = InlineKeyboardMarkup([
+            # ИСПРАВЛЕНО: Разбиваем создание клавиатуры на несколько строк для читаемости
+            keyboard_buttons = [
                 [InlineKeyboardButton("💬 Запросить информацию", callback_data=f"op_ask_{ticket_id}_{client_user_id}")],
                 [InlineKeyboardButton("📄 Отправить на проверку", callback_data=f"op_review_{ticket_id}_{client_user_id}")],
                 [InlineKeyboardButton("🏁 Закрыть обращение", callback_data=f"op_close_{ticket_id}_{client_user_id}")]
-            ])
+            ]
+            new_keyboard = InlineKeyboardMarkup(keyboard_buttons)
         else: # decline
             ticket_data['status'] = 'declined'
             notification_text = f"❌ К сожалению, мы не можем взять в работу ваше обращение №{ticket_id} в данный момент."
@@ -410,7 +412,7 @@ async def legal_menu_action(query, context):
     data = query.data
     if data == 'show_legal_menu':
         keyboard = [[InlineKeyboardButton("📄 Политика конфиденциальности", callback_data='legal_policy')], [InlineKeyboardButton("⚠️ Отказ от ответственности", callback_data='legal_disclaimer')], [InlineKeyboardButton("📑 Договор публичной оферты", callback_data='legal_oferta')], [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]]
-        await query.edit_message_text("Выберите документ:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("Выберите документ:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
     else:
         text = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}.get(query.data, "Документ не найден.")
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ К списку документов", callback_data='show_legal_menu')]]), parse_mode=ParseMode.MARKDOWN_V2)
@@ -419,9 +421,9 @@ async def services_menu_action(query, context):
     """Навигация по меню услуг."""
     data = query.data
     if data == 'show_services_menu':
-        keyboard = [[InlineKeyboardButton(escape_markdown(name, 2), callback_data=f'service_{key}')] for key, name in CATEGORY_NAMES.items()]
+        keyboard = [[InlineKeyboardButton(name, callback_data=f'service_{key}')] for key, name in CATEGORY_NAMES.items()]
         keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
-        await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text("Выберите сферу:", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN_V2)
     else:
         service_key = data.split('_')[1]
         await query.edit_message_text(SERVICE_DESCRIPTIONS[service_key], reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Создать обращение по этой теме", callback_data=f'order_{service_key}')]]), parse_mode=ParseMode.MARKDOWN_V2)
@@ -557,6 +559,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
