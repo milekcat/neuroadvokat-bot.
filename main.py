@@ -1,5 +1,7 @@
 import os
 import logging
+import json
+import re
 from datetime import datetime
 from threading import Lock
 from pathlib import Path
@@ -20,10 +22,25 @@ if not all([NEURO_ADVOCAT_TOKEN, CHAT_ID_FOR_ALERTS]):
     logger.critical("FATAL ERROR: NEURO_ADVOCAT_TOKEN or CHAT_ID_FOR_ALERTS is missing.")
     exit(1)
 
-# --- 2. УПРАВЛЕНИЕ ДАННЫМИ (УПРОЩЕННОЕ) ---
+# --- 2. УПРАВЛЕНИЕ ДАННЫМИ ---
 DATA_DIR = Path(os.environ.get("RAILWAY_VOLUME_MOUNT_PATH", "/app/data"))
 TICKET_COUNTER_FILE = DATA_DIR / "ticket_counter.txt"
-counter_lock = Lock()
+USER_STATES_FILE = DATA_DIR / "user_states.json"
+TICKETS_DB_FILE = DATA_DIR / "tickets.json"
+
+counter_lock, states_lock, tickets_lock = Lock(), Lock(), Lock()
+
+def load_json_data(file_path, lock):
+    with lock:
+        if not file_path.exists(): return {}
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f: return json.load(f)
+        except (json.JSONDecodeError, FileNotFoundError): return {}
+
+def save_json_data(data, file_path, lock):
+    with lock:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with open(file_path, 'w', encoding='utf-8') as f: json.dump(data, f, ensure_ascii=False, indent=4)
 
 def get_and_increment_ticket_number():
     with counter_lock:
@@ -36,8 +53,8 @@ def get_and_increment_ticket_number():
         TICKET_COUNTER_FILE.write_text(str(next_number))
         return next_number
 
-# Убираем сложную систему состояний, хранимую в файлах. Теперь все в памяти.
-user_states = {}
+user_states = load_json_data(USER_STATES_FILE, states_lock)
+tickets_db = load_json_data(TICKETS_DB_FILE, tickets_lock)
 
 # --- 3. ТЕКСТЫ И КОНСТАНТЫ ---
 SERVICE_DESCRIPTIONS = {
@@ -56,32 +73,39 @@ FAQ_ANSWERS = {
     "guarantee": "Мы *гарантируем*, что подготовленный нами документ будет юридически грамотным и убедительным. Гарантировать 100% выигрыш в суде не может ни один юрист."
 }
 CATEGORY_NAMES = {"civil": "Гражданское право", "family": "Семейное право", "housing": "Жилищное право", "military": "Военное право", "admin": "Административное право", "business": "Малый бизнес"}
+STATUS_EMOJI = {"new": "🆕", "in_progress": "⏳", "closed": "✅", "declined": "❌"}
 
 # --- 4. ФУНКЦИИ ИНТЕРФЕЙСА И КОМАНДЫ ---
 
 async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отображает главное меню."""
     keyboard = [
         [InlineKeyboardButton("✍️ Создать обращение", callback_data='show_services_menu')],
+        [InlineKeyboardButton("🗂️ Мои обращения", callback_data='my_tickets')],
         [InlineKeyboardButton("❓ Частые вопросы (FAQ)", callback_data='show_faq_menu')],
         [InlineKeyboardButton("📢 Наш канал", url=TELEGRAM_CHANNEL_URL)]
     ]
     text = (
         "*Вас приветствует «Нейро-Адвокат»*\n\n"
-        "Мы создаем юридические документы нового поколения, объединяя опыт юриста-«Дирижера» и мощь ИИ-«Оркестра».\n\n"
-        "Наша цель — не участие, а **результат**, закрепленный в документе."
+        "Мы — ваш личный арсенал для защиты прав. "
+        "Наша система «Дирижер и Оркестр» создает мощные юридические документы, нацеленные на **результат**.\n\n"
+        "▶️ *Создайте обращение*, чтобы начать.\n"
+        "▶️ Используйте *«Мои обращения»*, чтобы отследить статус ваших задач."
     )
     
     target = update.callback_query.message if update.callback_query else update.message
-    if update.callback_query:
-        await target.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-    else:
-        await target.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    try:
+        if update.callback_query:
+            await target.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        else:
+            await target.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except Exception as e:
+        logger.error(f"Error in show_main_menu: {e}")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = str(update.effective_user.id)
     if user_id in user_states:
         del user_states[user_id]
+        save_json_data(user_states, USER_STATES_FILE, states_lock)
     await update.message.reply_text("Перезапуск системы...", reply_markup=ReplyKeyboardRemove())
     await show_main_menu(update, context)
 
@@ -89,19 +113,44 @@ async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     user_id = str(update.effective_user.id)
     if user_id in user_states:
         del user_states[user_id]
+        save_json_data(user_states, USER_STATES_FILE, states_lock)
         await update.message.reply_text("Действие отменено.", reply_markup=ReplyKeyboardRemove())
     else:
         await update.message.reply_text("Нечего отменять.", reply_markup=ReplyKeyboardRemove())
     await show_main_menu(update, context)
 
-# --- 5. ОБРАБОТЧИКИ ДЕЙСТВИЙ ---
+# --- 5. ЛИЧНЫЙ КАБИНЕТ (УРЕЗАННЫЙ И НАДЕЖНЫЙ) ---
+
+async def my_tickets_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    user_tickets = {k: v for k, v in tickets_db.items() if v.get('user_id') == user_id}
+    text = "🗂️ *Ваши обращения:*\n\nЗдесь отображается список всех созданных вами заявок и их текущий статус."
+    keyboard = []
+    if not user_tickets:
+        text = "У вас пока нет ни одного обращения."
+        keyboard.append([InlineKeyboardButton("✍️ Создать первое обращение", callback_data='show_services_menu')])
+    else:
+        for ticket_id, ticket_data in sorted(user_tickets.items(), key=lambda item: int(item[0]), reverse=True):
+            status_emoji = STATUS_EMOJI.get(ticket_data.get('status', 'new'), '❓')
+            category = escape_markdown(ticket_data.get('category', 'Без категории'))
+            # Просто показываем информацию, без возможности входа в чат
+            button_text = f"{status_emoji} Обращение №{ticket_id} ({category})"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"info_ticket_{ticket_id}")])
+    
+    keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
+    target = update.callback_query.message if update.callback_query else update.message
+    if update.callback_query:
+        await target.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    else:
+        await target.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+
+# --- 6. ОБРАБОТЧИКИ ДЕЙСТВИЙ ---
 
 async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     await query.answer()
     data = query.data
 
-    # Маршрутизатор
     if data == 'show_services_menu':
         keyboard = [[InlineKeyboardButton(name, callback_data=f'service_{key}')] for key, name in CATEGORY_NAMES.items()]
         keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
@@ -120,6 +169,7 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         user_id = str(query.from_user.id)
         category_key = data.split('_')[1]
         user_states[user_id] = {'category': CATEGORY_NAMES[category_key], 'state': 'ask_name'}
+        save_json_data(user_states, USER_STATES_FILE, states_lock)
         await query.edit_message_text("Отлично. Прежде чем мы продолжим, пожалуйста, напишите, как к вам обращаться.")
 
     elif data == 'show_faq_menu':
@@ -139,6 +189,12 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard = [[InlineKeyboardButton("⬅️ К списку вопросов", callback_data='show_faq_menu')]]
         await query.edit_message_text(answer_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
 
+    elif data == 'my_tickets':
+        await my_tickets_action(update, context)
+
+    elif data.startswith('info_ticket_'):
+        await query.answer("Подробная информация и чат по обращению будут доступны в следующих версиях.", show_alert=True)
+
     elif data == 'back_to_start':
         await show_main_menu(update, context)
 
@@ -153,6 +209,10 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(new_text, parse_mode=ParseMode.MARKDOWN, reply_markup=None)
         
         if action == 'take':
+            with tickets_lock:
+                if ticket_id in tickets_db:
+                    tickets_db[ticket_id]['status'] = 'in_progress'
+                    save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
             try:
                 await context.bot.send_message(
                     chat_id=int(client_user_id),
@@ -161,19 +221,24 @@ async def inline_button_handler(update: Update, context: ContextTypes.DEFAULT_TY
                 )
             except Exception as e:
                 logger.error(f"Failed to send status update to client {client_user_id}: {e}")
+        else: # decline
+            with tickets_lock:
+                if ticket_id in tickets_db:
+                    tickets_db[ticket_id]['status'] = 'declined'
+                    save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
 
-# --- 6. ГЛАВНЫЙ ОБРАБОТЧИК СООБЩЕНИЙ ---
+# --- 7. ГЛАВНЫЙ ОБРАБОТЧИК СООБЩЕНИЙ ---
 
 async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     user_id = str(user.id)
     state_data = user_states.get(user_id)
 
-    if not state_data:
+    if not state_data or 'state' not in state_data:
         await show_main_menu(update, context)
         return
 
-    state = state_data.get('state')
+    state = state_data['state']
 
     if state == 'ask_name':
         if not update.message.text or update.message.text.startswith('/'):
@@ -182,11 +247,17 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             
         user_states[user_id]['name'] = update.message.text
         user_states[user_id]['state'] = 'collecting_data'
+        save_json_data(user_states, USER_STATES_FILE, states_lock) # <-- СОХРАНЯЕМ
         
         name = user_states[user_id]['name']
         ticket_id = get_and_increment_ticket_number()
         user_states[user_id]['ticket_number'] = ticket_id
+        save_json_data(user_states, USER_STATES_FILE, states_lock) # <-- СОХРАНЯЕМ СНОВА
         
+        with tickets_lock:
+            tickets_db[str(ticket_id)] = { "user_id": user_id, "user_name": name, "category": state_data['category'], "status": "new", "creation_date": datetime.now().isoformat() }
+            save_json_data(tickets_db, TICKETS_DB_FILE, tickets_lock)
+
         user_link = f"tg://user?id={user_id}"
         timestamp = datetime.now().strftime('%d.%m.%Y %H:%M')
         
@@ -204,14 +275,9 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             InlineKeyboardButton("❌ Отклонить", callback_data=f"decline_{ticket_id}_{user_id}")
         ]]
         
-        await context.bot.send_message(
-            chat_id=CHAT_ID_FOR_ALERTS, 
-            text=header_text, 
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup(operator_keyboard)
-        )
+        await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=header_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(operator_keyboard))
         
-        reply_keyboard = [["✅ Завершить и отправить обращение"]]
+        reply_keyboard = [["✅ Завершить отправку материалов"]]
         await update.message.reply_text(
             f"Приятно познакомиться, {escape_markdown(name)}!\n\n"
             f"Вашему обращению присвоен **номер {ticket_id}**.\n\n"
@@ -222,30 +288,25 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
     elif state == 'collecting_data':
         ticket_id = state_data.get('ticket_number', 'N/A')
-        if update.message.text == "✅ Завершить и отправить обращение":
+        if update.message.text == "✅ Завершить отправку материалов":
             footer_text = f"--- КОНЕЦ ЗАЯВКИ №{ticket_id} ---"
             await context.bot.send_message(chat_id=CHAT_ID_FOR_ALERTS, text=footer_text)
             
             await update.message.reply_text(
                 f"✅ *Отлично! Ваша заявка №{ticket_id} полностью сформирована и передана оператору.*\n\n"
-                "«Дирижер» изучит все материалы и скоро свяжется с вами.\n\n"
-                "**Следующий шаг:** после согласования всех правок мы пришлем вам защищенную PDF-версию документа на финальное утверждение.",
+                "«Дирижер» изучит все материалы. Отслеживайте статус вашего обращения в разделе *«Мои обращения»*.",
                 reply_markup=ReplyKeyboardRemove(),
                 parse_mode=ParseMode.MARKDOWN
             )
             del user_states[user_id]
+            save_json_data(user_states, USER_STATES_FILE, states_lock)
             return
         
-        # Просто пересылаем все материалы оператору
-        await context.bot.forward_message(
-            chat_id=CHAT_ID_FOR_ALERTS,
-            from_chat_id=user_id,
-            message_id=update.message.message_id
-        )
+        await context.bot.forward_message(chat_id=CHAT_ID_FOR_ALERTS, from_chat_id=user_id, message_id=update.message.message_id)
 
-# --- 7. ЗАПУСК БОТА ---
+# --- 8. ЗАПУСК БОТА ---
 def main() -> None:
-    logger.info("Starting bot version 5.0 'Reliable Core'...")
+    logger.info("Starting bot version 5.0 'Triumph Core'...")
     application = Application.builder().token(NEURO_ADVOCAT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
@@ -255,7 +316,7 @@ def main() -> None:
 
     logger.info("Application starting polling...")
     application.run_polling()
-    logger.info("Bot has been stopped.")
 
 if __name__ == "__main__":
     main()
+
