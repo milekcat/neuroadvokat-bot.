@@ -1,27 +1,23 @@
 import os
 import logging
-from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
 from telegram.helpers import escape_markdown
 
-# --- 1. НАСТРОЙКА (НОВЫЙ, НАДЕЖНЫЙ СПОСОБ) ---
+# --- 1. НАСТРОЙКА ---
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Загружаем переменные из файла .env
-load_dotenv()
 
 NEURO_ADVOCAT_TOKEN = os.environ.get('NEURO_ADVOCAT_TOKEN')
 TELEGRAM_CHANNEL_URL = os.environ.get('TELEGRAM_CHANNEL_URL')
 MANAGER_USER_ID = "8319092960" 
 
 if not all([NEURO_ADVOCAT_TOKEN, TELEGRAM_CHANNEL_URL]):
-    logger.critical("FATAL ERROR: Could not find variables in .env file or environment.")
+    logger.critical("FATAL ERROR: NEURO_ADVOCAT_TOKEN or TELEGRAM_CHANNEL_URL is missing.")
     exit(1)
 
-# --- 2. ТЕКСТЫ И КОНСТАНТЫ (ПОЛНОСТЬЮ ЗАПОЛНЕНЫ И ИСПРАВЛЕНЫ) ---
+# --- 2. ТЕКСТЫ И КОНСТАНТЫ (ПОЛНОСТЬЮ ЗАПОЛНЕНЫ) ---
 LEGAL_POLICY_TEXT = r"""
 📄 *Политика конфиденциальности*
 
@@ -200,7 +196,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- 5. ЗАПУСК БОТА ---
 def main() -> None:
-    logger.info("Starting bot version 7.0 'Final Briefing'...")
+    logger.info("Starting bot version 8.0 'Absolute'...")
     application = Application.builder().token(NEURO_ADVOCAT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
@@ -217,4 +213,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
 
