@@ -1,5 +1,6 @@
 import os
 import logging
+from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.constants import ParseMode
@@ -9,15 +10,22 @@ from telegram.helpers import escape_markdown
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Загружаем переменные из файла .env
+load_dotenv()
+
 NEURO_ADVOCAT_TOKEN = os.environ.get('NEURO_ADVOCAT_TOKEN')
 TELEGRAM_CHANNEL_URL = os.environ.get('TELEGRAM_CHANNEL_URL')
 MANAGER_USER_ID = "8319092960" 
 
+# НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ ПАРТНЕРА
+PARTNER_VK_URL = "https://vk.com/club227427328"
+PARTNER_TG_URL = "https://t.me/budem_jit_fond" # Предполагаемый Telegram-канал фонда
+
 if not all([NEURO_ADVOCAT_TOKEN, TELEGRAM_CHANNEL_URL]):
-    logger.critical("FATAL ERROR: NEURO_ADVOCAT_TOKEN or TELEGRAM_CHANNEL_URL is missing.")
+    logger.critical("FATAL ERROR: Could not find variables in .env file or environment.")
     exit(1)
 
-# --- 2. ТЕКСТЫ И КОНСТАНТЫ (ПОЛНОСТЬЮ ЗАПОЛНЕНЫ) ---
+# --- 2. ТЕКСТЫ И КОНСТАНТЫ ---
 LEGAL_POLICY_TEXT = r"""
 📄 *Политика конфиденциальности*
 
@@ -99,6 +107,7 @@ async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✍️ Выбрать услугу и связаться", callback_data='show_services_menu')],
         [InlineKeyboardButton("❓ Частые вопросы (FAQ)", callback_data='show_faq_menu')],
         [InlineKeyboardButton("⚖️ Юридическая информация", callback_data='show_legal_menu')],
+        [InlineKeyboardButton("🤝 Наш соратник: Фонд «Будем Жить!»", callback_data='show_partner_fund')],
         [InlineKeyboardButton("📢 Наш канал", url=TELEGRAM_CHANNEL_URL)]
     ]
     text = (
@@ -191,12 +200,26 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             [InlineKeyboardButton("⬅️ К списку документов", callback_data='show_legal_menu')]
         ]), parse_mode=ParseMode.MARKDOWN)
 
+    elif data == 'show_partner_fund':
+        text = (
+            "🤝 *Партнерство, которым мы гордимся*\n\n"
+            "Благотворительный фонд **«Будем Жить!»** оказывает неоценимую помощь бойцам на передовой и их семьям. Их работа — это пример настоящего дела и поддержки своих.\n\n"
+            "Мы в «Нейро-Адвокате» гордимся тем, что можем быть их юридическим щитом и надежным соратником в борьбе за права наших героев.\n\n"
+            "Поддержите их работу. Подпишитесь."
+        )
+        keyboard = [
+            [InlineKeyboardButton("▶️ ВКонтакте", url=PARTNER_VK_URL)],
+            [InlineKeyboardButton("▶️ Telegram", url=PARTNER_TG_URL)],
+            [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+
     elif data == 'back_to_start':
         await show_main_menu(update, context)
 
 # --- 5. ЗАПУСК БОТА ---
 def main() -> None:
-    logger.info("Starting bot version 8.0 'Absolute'...")
+    logger.info("Starting bot version 8.0 'Alliance'...")
     application = Application.builder().token(NEURO_ADVOCAT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
@@ -213,5 +236,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
