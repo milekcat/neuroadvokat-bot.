@@ -17,9 +17,9 @@ NEURO_ADVOCAT_TOKEN = os.environ.get('NEURO_ADVOCAT_TOKEN')
 TELEGRAM_CHANNEL_URL = os.environ.get('TELEGRAM_CHANNEL_URL')
 MANAGER_USER_ID = "8319092960" 
 
-# НОВЫЕ ПЕРЕМЕННЫЕ ДЛЯ ПАРТНЕРА
+# ПЕРЕМЕННЫЕ ДЛЯ ПАРТНЕРА (С ОБНОВЛЕННОЙ ССЫЛКОЙ)
 PARTNER_VK_URL = "https://vk.com/club227427328"
-PARTNER_TG_URL = "https://t.me/budem_jit_fond" # Предполагаемый Telegram-канал фонда
+PARTNER_TG_URL = "https://t.me/+ugOcGGYpKaM2NWNi" # <-- ВАША НОВАЯ, ПРАВИЛЬНАЯ ССЫЛКА
 
 if not all([NEURO_ADVOCAT_TOKEN, TELEGRAM_CHANNEL_URL]):
     logger.critical("FATAL ERROR: Could not find variables in .env file or environment.")
@@ -219,7 +219,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 # --- 5. ЗАПУСК БОТА ---
 def main() -> None:
-    logger.info("Starting bot version 8.0 'Alliance'...")
+    logger.info("Starting bot version 8.1 'Alliance Refined'...")
     application = Application.builder().token(NEURO_ADVOCAT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start_command))
@@ -236,3 +236,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
