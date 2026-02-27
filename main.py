@@ -1,239 +1,723 @@
-import os
+import asyncio
 import logging
-from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
-from telegram.constants import ParseMode
-from telegram.helpers import escape_markdown
+import os
+import sqlite3
+import re
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import StatesGroup, State
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramBadRequest
 
-# --- 1. НАСТРОЙКА ---
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-# Загружаем переменные из файла .env
-load_dotenv()
+API_TOKEN = os.getenv("API_TOKEN")
+BOSS_ID = os.getenv("DRIVER_ID") # Твой ID как владельца сети
 
-NEURO_ADVOCAT_TOKEN = os.environ.get('NEURO_ADVOCAT_TOKEN')
-TELEGRAM_CHANNEL_URL = os.environ.get('TELEGRAM_CHANNEL_URL')
-MANAGER_USER_ID = "8319092960" 
+if not API_TOKEN or not BOSS_ID:
+    logging.error("ВНИМАНИЕ: API_TOKEN или DRIVER_ID не найдены!")
 
-# ПЕРЕМЕННЫЕ ДЛЯ ПАРТНЕРА (С ОБНОВЛЕННОЙ ССЫЛКОЙ)
-PARTNER_VK_URL = "https://vk.com/club227427328"
-PARTNER_TG_URL = "https://t.me/+ugOcGGYpKaM2NWNi" # <-- ВАША НОВАЯ, ПРАВИЛЬНАЯ ССЫЛКА
+BOSS_ID = int(BOSS_ID)
+bot = Bot(token=API_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
+dp = Dispatcher()
 
-if not all([NEURO_ADVOCAT_TOKEN, TELEGRAM_CHANNEL_URL]):
-    logger.critical("FATAL ERROR: Could not find variables in .env file or environment.")
-    exit(1)
+active_orders = {} # Память для текущих заказов клиентов
 
-# --- 2. ТЕКСТЫ И КОНСТАНТЫ ---
-LEGAL_POLICY_TEXT = r"""
-📄 *Политика конфиденциальности*
+# ==========================================
+# 🗄️ БАЗА ДАННЫХ
+# ==========================================
+DB_PATH = "/data/taxi_db.sqlite" if os.path.exists("/data") else "taxi_db.sqlite"
 
-1\.  *Общие положения*
-    1.1. Настоящая Политика определяет порядок обработки и защиты персональных данных пользователей (далее – Пользователи) Сервиса «Нейро-Адвокат» (далее – Сервис).
-    1.2. *Использование Сервиса означает безоговорочное согласие Пользователя с настоящей Политикой и указанными в ней условиями обработки его персональной информации.* В случае несогласия с этими условиями Пользователь должен воздержаться от использования Сервиса.
-
-2\.  *Состав информации о пользователях*
-    2.1. Сервис собирает и хранит следующие данные:
-    - Уникальный идентификатор пользователя (Telegram User ID).
-    - Любые сообщения, файлы, изображения и голосовые сообщения, отправленные Пользователем в рамках прямого диалога со специалистом Сервиса.
-
-3\.  *Цели обработки данных*
-    3.1. Данные собираются исключительно с целью предоставления Пользователю услуг Сервиса, а именно – для анализа его ситуации и подготовки проекта юридического документа.
-
-4\.  *Обработка и передача данных*
-    4.1. Пользователь признает и соглашается, что его данные могут быть обработаны с использованием технологий искусственного интеллекта (ИИ) под контролем специалиста.
-    4.2. *Администрация Сервиса не несет ответственности за сохранность и конфиденциальность данных при их передаче через платформу Telegram.*
-"""
-LEGAL_DISCLAIMER_TEXT = r"""
-⚠️ *Отказ от ответственности (Disclaimer)*
-
-1\.  *Статус предоставляемых услуг*
-    1.1. Сервис «Нейро-Адвокат» является *информационно-технологическим продуктом*. Его задача — создание *проектов (шаблонов)* юридических документов на основе предоставленных Пользователем данных.
-    1.2. *Услуги Сервиса и созданные им документы НЕ ЯВЛЯЮТСЯ юридической консультацией, юридическим заключением или адвокатской деятельностью.* Это подготовка текстового материала по заданию Пользователя.
-
-2\.  *Ограничение гарантий*
-    2.1. Сервис предоставляется на условиях *«КАК ЕСТЬ» (“AS IS”)*.
-    2.2. Администрация Сервиса *не предоставляет никаких гарантий* в отношении того, что результаты, которые могут быть получены с использованием созданных документов, будут соответствовать ожиданиям Пользователя.
-
-3\.  *Ответственность Пользователя*
-    3.1. *Пользователь несет полную, исключительную и единоличную ответственность* за любое использование, изменение, подписание и подачу документов, созданных с помощью Сервиса.
-    3.2. *Перед любым практическим применением полученных документов Пользователь обязан самостоятельно проверить их содержание и/или проконсультироваться с квалифицированным юристом.*
-"""
-LEGAL_OFERTA_TEXT = r"""
-📑 *Договор публичной оферты*
-
-Настоящий документ является официальным предложением (публичной офертой) Сервиса «Нейро-Адвокат» (далее – Исполнитель) и содержит все существенные условия предоставления информационных услуг.
-
-1\.  *Термины*
-    - *Акцепт Оферты* – полное и безоговорочное принятие Оферты путем нажатия кнопки, ведущей к началу диалога со специалистом («Начать диалог с Дирижером»).
-    - *Заказчик* – любое лицо, совершившее Акцепт Оферты.
-    - *Услуга* – предоставление информационных услуг по созданию проекта юридического документа по заданию Заказчика.
-
-2\.  *Предмет договора*
-    2.1\. Исполнитель обязуется оказать Заказчику Услугу, а Заказчик – принять и оплатить ее.
-    2.2\. *Результатом Услуги является предоставление файла с проектом документа.* Исполнитель не гарантирует достижение каких-либо целей Заказчика (например, выигрыш в суде).
-
-3\.  *Порядок оказания и оплаты*
-    3.1\. Настоящий договор считается заключенным с момента Акцепта Оферты Заказчиком.
-    3.2\. Стоимость Услуги является фиксированной и составляет *3500 (три тысячи пятьсот) рублей*.
-    3.3\. Оплата Услуг производится Заказчиком только после финального согласования макета документа. *Возврат средств после отправки финальной версии документа в редактируемом формате (.docx) не производится.*
-
-4\.  *Ответственность сторон*
-    4.1\. *Совокупная ответственность Исполнителя по настоящему Договору ограничивается суммой платежа, уплаченного Заказчиком за конкретную Услугу.*
-    4.2\. Все споры решаются путем переговоров. При невозможности достижения согласия споры передаются на рассмотрение в суд по месту нахождения Исполнителя.
-"""
-SERVICE_DESCRIPTIONS = {
-    "civil": r"⚖️ *Гражданское право: Защита в повседневной жизни*\n\nДля каждого, кто столкнулся с несправедливостью: продали бракованный товар, некачественно сделали ремонт, химчистка испортила вещь, страховая занижает выплату по ДТП, соседи затопили квартиру.\n\n**Мы готовим:**\n• *Претензии:* грамотный досудебный шаг, который часто решает проблему без суда.\n• *Исковые заявления:* о возврате денег, взыскании неустойки, возмещении ущерба и морального вреда.\n• *Заявления на судебный приказ:* для быстрого взыскания бесспорных долгов.",
-    "family": r"👨‍👩‍👧‍👦 *Семейное право: Деликатная помощь*\n\nДля тех, кто хочет зафиксировать договоренности юридически, минимизируя конфликты.\n\n**Мы готовим:**\n• *Исковые заявления о взыскании алиментов:* как в % от дохода, так и в твердой денежной сумме (если доход «серый»).\n• *Заявления о расторжении брака* (если нет спора о детях и имуществе).\n• *Проекты соглашений об уплате алиментов:* для добровольного нотариального заверения.",
-    "housing": r"🏠 *Жилищное право: Ваш дом — ваша крепость*\n\nДля собственников и арендаторов, которые борются с бездействием УК, решают споры с соседями или хотят безопасно провести сделку.\n\n**Мы готовим:**\n• *Жалобы:* в Управляющую компанию, Жилищную инспекцию, Роспотребнадзор.\n• *Исковые заявления:* об определении порядка пользования квартирой, о нечинении препятствий.\n• *Проекты договоров:* купли-продажи, дарения, аренды (найма) с учетом ваших интересов.",
-    "military": r"🛡️ *Военное право и соцобеспечение: Поддержка для защитников*\n\nДля военнослужащих (включая участников СВО), ветеранов и их семей, столкнувшихся с бюрократией.\n\n**Мы готовим:**\n• *Запросы и рапорты:* в военкоматы, в/ч, ЕРЦ МО РФ для уточнения статуса, выплат, наград.\n• *Заявления:* на установление фактов, имеющих юридическое значение (например, участия в боевых действиях).\n• *Административные иски:* для обжалования отказов в назначении выплат и статусов.",
-    "admin": r"🏢 *Административное право: Борьба с бюрократией*\n\nДля граждан, столкнувшихся с незаконными действиями чиновников или получивших несправедливый штраф.\n\n**Мы готовим:**\n• *Жалобы:* на действия/бездействие должностных лиц в прокуратуру или вышестоящие органы.\n• *Заявления:* в Роспотребнадзор, Трудовую инспекцию.\n• *Ходатайства и жалобы:* по делам об административных правонарушениях (например, для отмены штрафа ГИБДД).",
-    "business": r"💼 *Для малого бизнеса и самозанятых: Юридический щит*\n\nДля фрилансеров и небольших компаний, которым нужны надежные документы, но юрист в штате невыгоден.\n\n**Мы готовим:**\n• *Проекты договоров:* оказания услуг, подряда, поставки с защитой ваших интересов (например, с условием об оплате).\n• *Претензии:* к контрагентам-должникам для взыскания оплаты.\n• *Акты выполненных работ* и другие сопроводительные документы."
-}
-FAQ_ANSWERS = {
-    "price": r"Стоимость подготовки любого документа — *3500 ₽*.\n\nЭто фиксированная цена, в которую уже включен анализ вашей ситуации, работа ИИ и финальная проверка юристом.",
-    "payment_and_delivery": r"Процесс построен на *полной прозрачности и оплате за результат*:\n\n1️⃣ После согласования всех деталей с Дирижером, мы готовим документ и присылаем вам *PDF-версию с водяными знаками* для финальной проверки.\n2️⃣ *Только после вашего 'ОК'*, вы производите оплату.\n3️⃣ Моментально после оплаты вы получаете *финальный файл в формате .docx (Word)*.",
-    "template": r"Это *не шаблон*.\n\nКаждый документ создается ИИ на основе актуального законодательства, а затем *обязательно* проверяется и доводится до совершенства живым юристом-«Дирижером».",
-    "timing": r"Обычно от *3 до 24 часов* с момента, как специалист получит от вас всю необходимую информацию.",
-    "guarantee": r"Мы *гарантируем*, что подготовленный нами документ будет юридически грамотным и убедительным. Гарантировать 100% выигрыш в суде не может ни один юрист."
-}
-CATEGORY_NAMES = {"civil": "Гражданское право", "family": "Семейное право", "housing": "Жилищное право", "military": "Военное право", "admin": "Административное право", "business": "Малый бизнес"}
-
-# --- 3. ФУНКЦИИ ИНТЕРФЕЙСА ---
-
-async def show_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [InlineKeyboardButton("✍️ Выбрать услугу и связаться", callback_data='show_services_menu')],
-        [InlineKeyboardButton("❓ Частые вопросы (FAQ)", callback_data='show_faq_menu')],
-        [InlineKeyboardButton("⚖️ Юридическая информация", callback_data='show_legal_menu')],
-        [InlineKeyboardButton("🤝 Наш соратник: Фонд «Будем Жить!»", callback_data='show_partner_fund')],
-        [InlineKeyboardButton("📢 Наш канал", url=TELEGRAM_CHANNEL_URL)]
-    ]
-    text = (
-        "*Вас приветствует «Нейро-Адвокат»*\n\n"
-        "Мы — информационная витрина, где вы можете подробно изучить наши услуги и, приняв решение, "
-        "напрямую связаться с нашим специалистом-«Дирижером» для начала работы.\n\n"
-        "**Наша цель** — предоставить вам всю информацию для уверенного выбора."
-    )
-    target = update.callback_query.message if update.callback_query else update.message
-    if update.callback_query:
-        await target.edit_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-    else:
-        await target.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Перезапуск...")
-    await show_main_menu(update, context)
-
-# --- 4. ОБРАБОТЧИК КНОПОК ---
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    query = update.callback_query
-    await query.answer()
-    data = query.data
-
-    manager_url = f"tg://user?id={MANAGER_USER_ID}"
-
-    if data == 'show_services_menu':
-        keyboard = [[InlineKeyboardButton(name, callback_data=f'service_{key}')] for key, name in CATEGORY_NAMES.items()]
-        keyboard.append([InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')])
-        await query.edit_message_text("Выберите сферу, в которой вам требуется помощь:", reply_markup=InlineKeyboardMarkup(keyboard))
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS drivers (
+            user_id INTEGER PRIMARY KEY,
+            username TEXT,
+            car_info TEXT,
+            payment_info TEXT,
+            status TEXT DEFAULT 'pending',
+            balance INTEGER DEFAULT 0
+        )
+    """)
+    cursor.execute("CREATE TABLE IF NOT EXISTS clients (user_id INTEGER PRIMARY KEY)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS order_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            driver_id INTEGER,
+            service_name TEXT,
+            price INTEGER
+        )
+    """)
     
-    elif data.startswith('service_'):
-        service_key = data.split('_')[1]
-        text = SERVICE_DESCRIPTIONS.get(service_key, "Описание не найдено.")
-        keyboard = [
-            [InlineKeyboardButton("✅ Перейти к оформлению", callback_data=f'pre_order_{service_key}')],
-            [InlineKeyboardButton("⬅️ К списку услуг", callback_data='show_services_menu')]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
-
-    elif data.startswith('pre_order_'):
-        service_key = data.split('_')[2]
-        category_name = CATEGORY_NAMES.get(service_key, "выбранной услуге")
-        text = (
-            f"✅ *Вы выбрали: {escape_markdown(category_name)}*\n\n"
-            "**Следующий шаг — прямой диалог с нашим специалистом-«Дирижером».**\n\n"
-            "Нажав кнопку «Начать диалог» ниже, вы будете перенаправлены в личный чат с оператором.\n\n"
-            "**Пожалуйста, будьте готовы предоставить ему:**\n"
-            "1\\. Краткое описание вашей ситуации (текстом или голосовым сообщением).\n"
-            "2\\. Все имеющиеся документы (фото, сканы, скриншоты).\n\n"
-            "_Нажимая кнопку, вы подтверждаете, что ознакомились с нашей Юридической информацией (в главном меню) и принимаете условия Договора оферты._"
+    # АВТО-РЕГИСТРАЦИЯ БОССА
+    cursor.execute("SELECT 1 FROM drivers WHERE user_id = ?", (BOSS_ID,))
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO drivers (user_id, username, car_info, payment_info, status) VALUES (?, ?, ?, ?, 'active')",
+            (BOSS_ID, "BOSS_NETWORK", "BOSS (Black Car)", "Яндекс Банк +79012723729 (Босс)")
         )
-        keyboard = [
-            [InlineKeyboardButton("➡️ Начать диалог с Дирижером", url=manager_url)],
-            [InlineKeyboardButton("⬅️ Назад к описанию", callback_data=f'service_{service_key}')]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    conn.commit()
+    conn.close()
 
-    elif data == 'show_faq_menu':
-        keyboard = [
-            [InlineKeyboardButton("Как я получу и оплачу документ?", callback_data='faq_payment_and_delivery')],
-            [InlineKeyboardButton("Сколько стоят услуги?", callback_data='faq_price')],
-            [InlineKeyboardButton("Это просто шаблон?", callback_data='faq_template')],
-            [InlineKeyboardButton("Сколько времени это займет?", callback_data='faq_timing')],
-            [InlineKeyboardButton("Есть ли гарантии?", callback_data='faq_guarantee')],
-            [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]
-        ]
-        await query.edit_message_text("Выберите интересующий вас вопрос:", reply_markup=InlineKeyboardMarkup(keyboard))
+init_db()
+
+def get_active_drivers():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id FROM drivers WHERE status='active'")
+    drivers = cursor.fetchall()
+    conn.close()
+    return [d[0] for d in drivers]
+
+def get_driver_info(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT username, car_info, payment_info, balance FROM drivers WHERE user_id=?", (user_id,))
+    res = cursor.fetchone()
+    conn.close()
+    return res
+
+def update_driver_field(user_id, field, value):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    query = f"UPDATE drivers SET {field} = ? WHERE user_id = ?"
+    cursor.execute(query, (value, user_id))
+    conn.commit()
+    conn.close()
+
+def extract_price(text):
+    nums = re.findall(r'\d+', str(text))
+    return int("".join(nums)) if nums else 0
+
+def log_order(driver_id, service_name, price):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("INSERT INTO order_history (driver_id, service_name, price) VALUES (?, ?, ?)", (driver_id, service_name, price))
+    conn.commit()
+    conn.close()
+
+def add_commission(driver_id, amount):
+    if driver_id == BOSS_ID: return 
+    commission = int(amount * 0.10)
+    if commission <= 0: return 
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("UPDATE drivers SET balance = balance + ? WHERE user_id=?", (commission, driver_id))
+    conn.commit()
+    conn.close()
+
+def is_client_accepted(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT 1 FROM clients WHERE user_id = ?", (user_id,))
+    result = cursor.fetchone()
+    conn.close()
+    return bool(result)
+
+# --- БАЗА УСЛУГ ---
+CRAZY_SERVICES = {
+    "candy": {"name": "🍬 Конфетка", "price": 0, "desc": "Водитель торжественно вручит вам вкусную конфетку."},
+    "joke": {"name": "🎭 Анекдот", "price": 50, "desc": "Анекдот из золотой коллекции."},
+    "tale": {"name": "📖 Сказка на ночь", "price": 300, "desc": "Захватывающая история из жизни таксиста."},
+    "spy": {"name": "🕵️‍♂️ Шпион", "price": 2000, "desc": "Едем за 'той машиной'. Водитель в черных очках."},
+    "karaoke": {"name": "🎤 Караоке-баттл", "price": 5000, "desc": "Поем во весь голос хиты 90-х."},
+    "dance": {"name": "🕺 Танцы на светофоре", "price": 15000, "desc": "Красный свет? Я выхожу и танцую!"},
+    "kidnap": {"name": "🎭 Похищение", "price": 30000, "desc": "Везут пить чай на природу (по сценарию)."},
+    "tarzan": {"name": "🦍 Тарзан-шоу", "price": 50000, "desc": "Кричу и бью себя в грудь. Максимальный кринж!"},
+    "burn": {"name": "🔥 Сжечь машину", "price": 1000000, "desc": "Ты даешь лям, я даю канистру."}
+}
+
+class OrderRide(StatesGroup):
+    waiting_for_from = State()
+    waiting_for_to = State()
+    waiting_for_phone = State() 
+    waiting_for_price = State()
+
+class CustomIdea(StatesGroup):
+    waiting_for_idea = State()
+    waiting_for_price = State()
+
+class DriverCounterOffer(StatesGroup):
+    waiting_for_offer = State()
+
+class DriverRegistration(StatesGroup):
+    waiting_for_car = State()
+    waiting_for_payment_info = State()
+
+class AdminEditDriver(StatesGroup):
+    waiting_for_new_value = State()
+
+main_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="🚕 Заказать такси (Торг)")],
+        [KeyboardButton(text="📜 CRAZY ХАОС-МЕНЮ")],
+        [KeyboardButton(text="💡 Свой вариант (Предложить идею)")],
+        [KeyboardButton(text="⚖️ Вызвать адвоката / Правила")]
+    ], resize_keyboard=True
+)
+
+tos_kb = InlineKeyboardMarkup(inline_keyboard=[
+    [InlineKeyboardButton(text="✅ Я В МАШИНЕ, ОСОЗНАЮ ПОСЛЕДСТВИЯ", callback_data="accept_tos")],
+    [InlineKeyboardButton(text="❌ Выпустите меня!", callback_data="decline_tos")]
+])
+
+# ==========================================
+# 🛑 СТАРТ И КОНТРАКТ
+# ==========================================
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    disclaimer_text = (
+        "⚠️ <b>ОФИЦИАЛЬНОЕ ПРЕДУПРЕЖДЕНИЕ</b> ⚠️\n\n"
+        "ВНИМАНИЕ! Вы пытаетесь воспользоваться услугами <b>Crazy Taxi</b>.\n"
+        "Салон этого автомобиля является юридически неприкосновенной зоной <b>Арт-перформанса</b>.\n\n"
+        "<b>Нажимая кнопку ниже, вы подтверждаете, что:</b>\n"
+        "1. Любая дичь, происходящая внутри, классифицируется как 'современное искусство'.\n"
+        "2. Вы заранее отказываетесь от любых судебных исков.\n"
+        "3. Наш адвокат слишком хорош. Судиться с нами бесполезно.\n"
+        "4. Вы находитесь в салоне добровольно.\n\n"
+        "<i>Готов шагнуть в зону абсолютной юридической анархии?</i>"
+    )
+    await message.answer(disclaimer_text, reply_markup=tos_kb)
+
+@dp.callback_query(F.data == "accept_tos")
+async def tos_accepted(callback: types.CallbackQuery):
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT OR IGNORE INTO clients (user_id) VALUES (?)", (callback.from_user.id,))
+    conn.commit()
+    conn.close()
+    await callback.message.edit_text("🔥 <b>ДОБРО ПОЖАЛОВАТЬ В CRAZY TAXI!</b> 🔥\nКонтракт подписан. Двери заблокированы.")
+    await callback.message.answer("Выбирай действие в меню ниже 👇", reply_markup=main_kb)
+
+@dp.callback_query(F.data == "decline_tos")
+async def tos_declined(callback: types.CallbackQuery):
+    await callback.message.edit_text("🚶‍♂️ Очень жаль! Удачной пешей прогулки!")
+
+async def check_tos(message: types.Message) -> bool:
+    if not is_client_accepted(message.from_user.id):
+        await message.answer("🛑 <b>ОШИБКА ДОСТУПА!</b>\nСначала нужно подписать контракт. Нажми /start")
+        return False
+    return True
+
+@dp.message(F.text == "⚖️ Вызвать адвоката / Правила")
+async def lawyer_menu(message: types.Message):
+    if not await check_tos(message): return
+    lawyer_text = "⚖️ <b>НАШ НЕПОБЕДИМЫЙ АДВОКАТ</b> ⚖️\n\nЧитать права здесь будет только он, и то на латыни."
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="🚨 СВЯЗАТЬСЯ С АДВОКАТОМ 🚨", callback_data="call_lawyer")]])
+    await message.answer(lawyer_text, reply_markup=kb)
+
+@dp.callback_query(F.data == "call_lawyer")
+async def alert_lawyer(callback: types.CallbackQuery):
+    await callback.answer("🚨 Адвокат занят подачей иска на твою скуку.", show_alert=True)
+
+# ==========================================
+# 🚀 МОНИТОРИНГ И РАССЫЛКА
+# ==========================================
+async def update_boss_monitor(client_id, taking_driver_id):
+    order = active_orders.get(client_id)
+    if not order or 'boss_msg_id' not in order: return
+    
+    drv_info = get_driver_info(taking_driver_id)
+    drv_name = f"@{drv_info[0]}" if drv_info[0] else "Unknown"
+    
+    text_prefix = "🚫 <b>ЗАКАЗ ЗАБРАЛ:</b> "
+    if taking_driver_id == BOSS_ID: text_prefix += "<b>ТЫ (БОСС)!</b>"
+    else: text_prefix += f"Водитель {drv_name} ({drv_info[1]})"
         
-    elif data.startswith('faq_'):
-        faq_key = data.split('_', 1)[1]
-        answer_text = FAQ_ANSWERS.get(faq_key, "Ответ не найден.")
-        keyboard = [[InlineKeyboardButton("⬅️ К списку вопросов", callback_data='show_faq_menu')]]
-        await query.edit_message_text(answer_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    original_text = order.get('broadcasting_text', '')
+    new_text = f"{text_prefix}\n\n{original_text}"
+    
+    try: await bot.edit_message_text(chat_id=BOSS_ID, message_id=order['boss_msg_id'], text=new_text, reply_markup=None)
+    except TelegramBadRequest: pass
+
+async def broadcast_order_to_drivers(client_id, order_text, driver_kb, boss_kb):
+    # 1. Босс
+    boss_monitor_text = f"🚨 <b>МОНИТОРИНГ СЕТИ</b> 🚨\n\n{order_text}"
+    boss_msg = await bot.send_message(chat_id=BOSS_ID, text=boss_monitor_text, reply_markup=boss_kb)
+    
+    if client_id in active_orders:
+        active_orders[client_id]['boss_msg_id'] = boss_msg.message_id
+        active_orders[client_id]['broadcasting_text'] = order_text
+
+    # 2. Клиент (радар)
+    search_msg = await bot.send_message(client_id, "📡 <i>Радары включены. Ищем безумцев...</i>")
+    await asyncio.sleep(2.5) 
+    
+    drivers = get_active_drivers()
+    drivers_to_broadcast = [d for d in drivers if d != BOSS_ID]
+    
+    if not drivers_to_broadcast:
+        await search_msg.edit_text("😔 <b>Все водители заняты.</b>\nБосс уведомлен.")
+        return
         
-    elif data == 'show_legal_menu':
-        keyboard = [
-            [InlineKeyboardButton("📄 Политика конфиденциальности", callback_data='legal_policy')],
-            [InlineKeyboardButton("⚠️ Отказ от ответственности", callback_data='legal_disclaimer')],
-            [InlineKeyboardButton("📑 Договор публичной оферты", callback_data='legal_oferta')],
-            [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]
-        ]
-        await query.edit_message_text("Выберите документ для ознакомления:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await search_msg.edit_text("⏳ <b>Сигнал передан водителям!</b>\nЖдем, кто успеет...")
+    
+    async def send_to_driver(d_id):
+        try:
+            await bot.send_message(chat_id=d_id, text=order_text, reply_markup=driver_kb)
+            return True
+        except: return False
 
-    elif data.startswith('legal_'):
-        text_map = {"legal_policy": LEGAL_POLICY_TEXT, "legal_disclaimer": LEGAL_DISCLAIMER_TEXT, "legal_oferta": LEGAL_OFERTA_TEXT}
-        text = text_map.get(data, "Документ не найден.")
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("⬅️ К списку документов", callback_data='show_legal_menu')]
-        ]), parse_mode=ParseMode.MARKDOWN)
+    tasks = [send_to_driver(d_id) for d_id in drivers_to_broadcast]
+    await asyncio.gather(*tasks)
 
-    elif data == 'show_partner_fund':
-        text = (
-            "🤝 *Партнерство, которым мы гордимся*\n\n"
-            "Благотворительный фонд **«Будем Жить!»** оказывает неоценимую помощь бойцам на передовой и их семьям. Их работа — это пример настоящего дела и поддержки своих.\n\n"
-            "Мы в «Нейро-Адвокате» гордимся тем, что можем быть их юридическим щитом и надежным соратником в борьбе за права наших героев.\n\n"
-            "Поддержите их работу. Подпишитесь."
-        )
-        keyboard = [
-            [InlineKeyboardButton("▶️ ВКонтакте", url=PARTNER_VK_URL)],
-            [InlineKeyboardButton("▶️ Telegram", url=PARTNER_TG_URL)],
-            [InlineKeyboardButton("⬅️ Назад в меню", callback_data='back_to_start')]
-        ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+# ==========================================
+# 📜 ЗАКАЗЫ И УСЛУГИ
+# ==========================================
+@dp.message(F.text == "📜 CRAZY ХАОС-МЕНЮ")
+async def show_crazy_menu(message: types.Message):
+    if not await check_tos(message): return
+    buttons = []
+    keys = list(CRAZY_SERVICES.keys())
+    for i in range(0, len(keys), 2):
+        row = []
+        for key in keys[i:i+2]:
+            data = CRAZY_SERVICES[key]
+            price_text = "🆓 0₽" if data['price'] == 0 else f"{data['price']}₽"
+            row.append(InlineKeyboardButton(text=f"{data['name']} ({price_text})", callback_data=f"csel_{key}"))
+        buttons.append(row)
+    await message.answer("🔥 <b>CRAZY DRIVER'S CHAOS MENU</b> 🔥", reply_markup=InlineKeyboardMarkup(inline_keyboard=buttons))
 
-    elif data == 'back_to_start':
-        await show_main_menu(update, context)
+@dp.callback_query(F.data.startswith("csel_"))
+async def process_crazy_selection(callback: types.CallbackQuery):
+    service_key = callback.data.split("_")[1]
+    service = CRAZY_SERVICES[service_key]
+    client_id = callback.from_user.id
+    
+    active_orders[client_id] = {"type": "crazy", "service": service, "status": "pending", "price": str(service["price"])}
+    price_text = "БЕСПЛАТНО" if service["price"] == 0 else f"{service['price']}₽"
+    
+    await callback.message.edit_text(f"🎪 <b>ВЫБРАНА УСЛУГА:</b> {service['name']}\n💰 <b>Стоимость:</b> {price_text}")
+    
+    driver_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚡️ ЗАБРАТЬ", callback_data=f"take_crazy_{client_id}")]])
+    boss_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚡️ ЗАБРАТЬ (БОСС)", callback_data=f"boss_take_crazy_{client_id}")]])
+    
+    text = f"🚨 <b>ХАОС-ЗАКАЗ!</b> 🚨\nКлиент: @{callback.from_user.username}\nУслуга: <b>{service['name']}</b> ({price_text})"
+    await broadcast_order_to_drivers(client_id, text, driver_kb, boss_kb)
 
-# --- 5. ЗАПУСК БОТА ---
-def main() -> None:
-    logger.info("Starting bot version 8.1 'Alliance Refined'...")
-    application = Application.builder().token(NEURO_ADVOCAT_TOKEN).build()
+@dp.callback_query(F.data.startswith("take_crazy_") | F.data.startswith("boss_take_crazy_"))
+async def driver_takes_crazy(callback: types.CallbackQuery):
+    is_boss_taking = callback.data.startswith("boss_take_")
+    client_id = int(callback.data.split("_")[3 if is_boss_taking else 2])
+    driver_id = callback.from_user.id
+    
+    order = active_orders.get(client_id)
+    if not order or order["status"] != "pending":
+        await callback.answer("Упс! Заказ уже забрали.", show_alert=True)
+        if not is_boss_taking: await callback.message.delete()
+        return
 
-    application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    order["status"] = "accepted"
+    order["driver_id"] = driver_id
+    await update_boss_monitor(client_id, driver_id)
+    
+    if is_boss_taking: await callback.message.edit_text(f"✅ Ты забрал заказ: {order['service']['name']}!")
+    else: await callback.message.edit_text(f"✅ Ты забрал заказ: {order['service']['name']}!")
+    
+    driver_info = get_driver_info(driver_id)
+    price_val = extract_price(order['price'])
+    drv_name = "Сам БОСС Crazy Taxi" if is_boss_taking else driver_info[0]
+    
+    if price_val == 0:
+        pay_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ ЖДУ СЮРПРИЗ!", callback_data=f"cpay_done_{client_id}")]])
+        client_text = f"🚕 <b>ВОДИТЕЛЬ НАЙДЕН!</b>\nК тебе едет: {drv_name} ({driver_info[1]})\n🎁 <b>Бесплатно!</b>\nЖми кнопку!"
+    else:
+        pay_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💸 Я ОПЛАТИЛ", callback_data=f"cpay_done_{client_id}")]])
+        client_text = f"🚕 <b>ВОДИТЕЛЬ НАЙДЕН!</b>\nК тебе едет: {drv_name} ({driver_info[1]})\n💳 <b>Переведи ({order['price']}) на:</b>\n<code>{driver_info[2]}</code>\nЖми кнопку!"
+        
+    await bot.send_message(client_id, client_text, reply_markup=pay_kb)
 
-    async def redirect_to_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        await update.message.reply_text("Пожалуйста, используйте кнопки для навигации.")
-        await show_main_menu(update, context)
+@dp.callback_query(F.data.startswith("cpay_done_"))
+async def client_paid_crazy(callback: types.CallbackQuery):
+    client_id = callback.from_user.id
+    order = active_orders.get(client_id)
+    if not order: return
+    
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ ВЫПОЛНИЛ", callback_data=f"confirm_pay_{client_id}")]])
+    await callback.message.edit_text("⏳ Ожидание водителя...")
+    await bot.send_message(order["driver_id"], f"🎁 Клиент @{callback.from_user.username} готов к: <b>{order['service']['name']}</b>!\nСделай и нажми.", reply_markup=kb)
 
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, redirect_to_menu))
+@dp.callback_query(F.data.startswith("confirm_pay_"))
+async def driver_confirms_pay(callback: types.CallbackQuery):
+    client_id = int(callback.data.split("_")[2])
+    driver_id = callback.from_user.id
+    order = active_orders.get(client_id)
+    if not order: return
+    
+    price_int = extract_price(order['price'])
+    add_commission(driver_id, price_int)
+    log_order(driver_id, order['service']['name'], price_int)
+    
+    await callback.message.edit_text("✅ Выполнено! Записано в историю.")
+    await bot.send_message(client_id, "🎉 Водитель подтвердил выполнение!")
+    del active_orders[client_id]
 
-    logger.info("Application starting polling...")
-    application.run_polling()
+# ==========================================
+# 💡 СВОЙ ВАРИАНТ
+# ==========================================
+@dp.message(F.text == "💡 Свой вариант (Предложить идею)")
+async def custom_idea_start(message: types.Message, state: FSMContext):
+    if not await check_tos(message): return
+    await message.answer("Опиши идею:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(CustomIdea.waiting_for_idea)
+
+@dp.message(CustomIdea.waiting_for_idea)
+async def process_custom_idea(message: types.Message, state: FSMContext):
+    await state.update_data(idea=message.text)
+    await message.answer("💰 <b>Бюджет?</b> (сумма):")
+    await state.set_state(CustomIdea.waiting_for_price)
+
+@dp.message(CustomIdea.waiting_for_price)
+async def process_custom_price(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    idea, price = data['idea'], message.text
+    client_id = message.from_user.id
+    
+    active_orders[client_id] = {
+        "type": "crazy", "status": "pending", "price": price,
+        "service": {"name": f"💡 Идея ({idea[:15]}...)", "desc": idea},
+        "driver_offers": {}
+    }
+    await message.answer("✅ <b>Зафиксировано!</b>", reply_markup=main_kb)
+    await state.clear()
+
+    driver_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚡️ ЗАБРАТЬ", callback_data=f"take_crazy_{client_id}")], [InlineKeyboardButton(text="💰 Своя цена", callback_data=f"counter_crazy_{client_id}")]])
+    boss_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⚡️ ЗАБРАТЬ (БОСС)", callback_data=f"boss_take_crazy_{client_id}")], [InlineKeyboardButton(text="💰 Своя цена", callback_data=f"counter_crazy_{client_id}")]])
+    
+    text = f"💡 <b>ИДЕЯ ОТ КЛИЕНТА</b> 💡\n👤 @{message.from_user.username}\n📝: {idea}\n💰 Бюджет: <b>{price}</b>"
+    await broadcast_order_to_drivers(client_id, text, driver_kb, boss_kb)
+
+# ==========================================
+# 🚕 ТАКСИ + ТОРГ
+# ==========================================
+@dp.message(F.text == "🚕 Заказать такси (Торг)")
+async def start_ride_order(message: types.Message, state: FSMContext):
+    if not await check_tos(message): return
+    await message.answer("📍 <b>Откуда?</b>", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(OrderRide.waiting_for_from)
+
+@dp.message(OrderRide.waiting_for_from)
+async def process_from_address(message: types.Message, state: FSMContext):
+    await state.update_data(from_address=message.text)
+    await message.answer("🏁 <b>Куда?</b>")
+    await state.set_state(OrderRide.waiting_for_to)
+
+@dp.message(OrderRide.waiting_for_to)
+async def process_to_address(message: types.Message, state: FSMContext):
+    await state.update_data(to_address=message.text)
+    await message.answer("📞 <b>Твой телефон:</b>")
+    await state.set_state(OrderRide.waiting_for_phone)
+
+@dp.message(OrderRide.waiting_for_phone)
+async def process_phone(message: types.Message, state: FSMContext):
+    await state.update_data(phone=message.text)
+    await message.answer("💰 <b>Цена?</b>")
+    await state.set_state(OrderRide.waiting_for_price)
+
+@dp.message(OrderRide.waiting_for_price)
+async def process_price(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    client_id = message.from_user.id
+    
+    active_orders[client_id] = {
+        "type": "taxi", "status": "pending", "price": message.text,
+        "from": user_data['from_address'], "to": user_data['to_address'], "phone": user_data['phone'],
+        "driver_offers": {}
+    }
+    await message.answer("✅ <b>Принято!</b>", reply_markup=main_kb)
+    await state.clear()
+
+    driver_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Забрать", callback_data=f"take_taxi_{client_id}")], [InlineKeyboardButton(text="💰 Своя цена", callback_data=f"counter_taxi_{client_id}")]])
+    boss_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ ЗАБРАТЬ (БОСС)", callback_data=f"boss_take_taxi_{client_id}")], [InlineKeyboardButton(text="💰 Своя цена", callback_data=f"counter_taxi_{client_id}")]])
+    
+    text = f"🚕 <b>ЗАКАЗ ТАКСИ</b> 🚕\n📍: {user_data['from_address']}\n🏁: {user_data['to_address']}\n💰: <b>{message.text}</b>"
+    await broadcast_order_to_drivers(client_id, text, driver_kb, boss_kb)
+
+@dp.callback_query(F.data.startswith("take_taxi_") | F.data.startswith("boss_take_taxi_"))
+async def driver_takes_taxi(callback: types.CallbackQuery):
+    is_boss_taking = callback.data.startswith("boss_take_")
+    client_id = int(callback.data.split("_")[3 if is_boss_taking else 2])
+    driver_id = callback.from_user.id
+    
+    order = active_orders.get(client_id)
+    if not order or order["status"] != "pending":
+        await callback.answer("Упс! Заказ забрали.", show_alert=True)
+        if not is_boss_taking: await callback.message.delete()
+        return
+
+    order["status"] = "accepted"
+    order["driver_id"] = driver_id
+    await update_boss_monitor(client_id, driver_id)
+    
+    finish_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Завершить", callback_data=f"finish_taxi_{client_id}")]])
+    
+    if is_boss_taking: await callback.message.edit_text(f"✅ Ты забрал такси!\n📞: <b>{order['phone']}</b>", reply_markup=finish_kb)
+    else: await callback.message.edit_text(f"✅ Ты забрал поездку!\n📞: <b>{order['phone']}</b>", reply_markup=finish_kb)
+        
+    driver_info = get_driver_info(driver_id)
+    drv_name = "Сам БОСС Crazy Taxi" if is_boss_taking else driver_info[0]
+    await bot.send_message(client_id, f"🚕 <b>ВОДИТЕЛЬ ЕДЕТ!</b>\n{drv_name} ({driver_info[1]})\nТел: {order['phone']}!")
+
+@dp.callback_query(F.data.startswith("finish_taxi_"))
+async def driver_finish_taxi(callback: types.CallbackQuery):
+    client_id = int(callback.data.split("_")[2])
+    driver_id = callback.from_user.id
+    order = active_orders.get(client_id)
+    if not order: return
+
+    price_int = extract_price(order['price'])
+    add_commission(driver_id, price_int)
+    log_order(driver_id, "Обычное такси", price_int) 
+    
+    await callback.message.edit_text("✅ Поездка завершена!")
+    await bot.send_message(client_id, "🏁 Поездка завершена. Спасибо!")
+    del active_orders[client_id]
+
+# ==========================================
+# 🤝 ТОРГ (COUNTER-OFFER)
+# ==========================================
+@dp.callback_query(F.data.startswith("counter_"))
+async def start_counter_offer(callback: types.CallbackQuery, state: FSMContext):
+    parts = callback.data.split("_")
+    order_type, client_id = parts[1], int(parts[2])
+    await state.update_data(target_client_id=client_id, order_type=order_type)
+    await callback.message.answer("✍️ Напиши цену и условия (напр: '2500, через 5 мин'):")
+    await state.set_state(DriverCounterOffer.waiting_for_offer)
+    await callback.answer()
+
+@dp.message(DriverCounterOffer.waiting_for_offer)
+async def send_counter_offer(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    client_id, order_type, offer_text = data.get('target_client_id'), data.get('order_type'), message.text
+    driver_id = message.from_user.id
+    
+    order = active_orders.get(client_id)
+    if not order or order["status"] != "pending":
+        await message.answer("❌ Заказ не актуален.")
+        await state.clear()
+        return
+        
+    if "driver_offers" not in order: order["driver_offers"] = {}
+    order["driver_offers"][driver_id] = offer_text
+    
+    acc_data = f"acc_coff_{order_type}_{client_id}_{driver_id}"
+    rej_data = f"rej_coff_{client_id}"
+    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Согласен", callback_data=acc_data)], [InlineKeyboardButton(text="❌ Отказ", callback_data=rej_data)]])
+    
+    drv_label = "БОСС" if driver_id == BOSS_ID else "Водитель"
+    await bot.send_message(client_id, f"⚡️ <b>{drv_label} предлагает условия:</b>\n\n{offer_text}", reply_markup=kb)
+    await message.answer("✅ Отправлено клиенту!")
+    await state.clear()
+
+@dp.callback_query(F.data.startswith("acc_coff_"))
+async def client_accepts_offer(callback: types.CallbackQuery):
+    parts = callback.data.split("_")
+    order_type, client_id, driver_id = parts[2], int(parts[3]), int(parts[4])
+    
+    order = active_orders.get(client_id)
+    if not order or order["status"] != "pending":
+        await callback.answer("Не актуально.", show_alert=True)
+        return
+        
+    order["status"] = "accepted"
+    order["driver_id"] = driver_id
+    if "driver_offers" in order and driver_id in order["driver_offers"]:
+        order["price"] = order["driver_offers"][driver_id] 
+        
+    await update_boss_monitor(client_id, driver_id)
+        
+    driver_info = get_driver_info(driver_id)
+    drv_label = "БОСС" if driver_id == BOSS_ID else driver_info[0]
+    
+    if order_type == "crazy": 
+        pay_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💸 Я ОПЛАТИЛ", callback_data=f"cpay_done_{client_id}")]])
+        await callback.message.edit_text(f"🚕 <b>ДОГОВОРИЛИСЬ!</b>\nИсполнитель: {drv_label}\n💳 <b>Переведи сумму на:</b>\n<code>{driver_info[2]}</code>", reply_markup=pay_kb)
+        await bot.send_message(driver_id, "✅ Клиент согласился на условия! Жди оплату.")
+    else: 
+        finish_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Завершить", callback_data=f"finish_taxi_{client_id}")]])
+        await bot.send_message(driver_id, f"✅ Клиент согласился на условия!\nТел: <b>{order['phone']}</b>", reply_markup=finish_kb)
+        await callback.message.edit_text(f"🚕 <b>ВОДИТЕЛЬ ЕДЕТ!</b>\n{drv_label} свяжется по номеру {order['phone']}!")
+
+@dp.callback_query(F.data.startswith("rej_coff_"))
+async def client_rejects_offer(callback: types.CallbackQuery):
+    await callback.message.edit_text("❌ Ты отказался. Ждем других.")
+
+# ==========================================
+# 🪪 КАБИНЕТ И АДМИНКА
+# ==========================================
+@dp.message(Command("cab"))
+async def cmd_driver_cabinet(message: types.Message):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT status, balance FROM drivers WHERE user_id=?", (message.from_user.id,))
+    res = cursor.fetchone()
+    conn.close()
+    
+    if not res or res[0] != 'active':
+        await message.answer("❌ Доступно только одобренным водителям.")
+        return
+        
+    balance_text = ""
+    hist_text = ""
+    if message.from_user.id != BOSS_ID:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*), SUM(price) FROM order_history WHERE driver_id=?", (message.from_user.id,))
+        hist = cursor.fetchone()
+        conn.close()
+        completed_count = hist[0] or 0
+        total_earned = hist[1] or 0
+        balance_text = f"Твой долг по комиссии: <b>{res[1]}₽</b>\n"
+        hist_text = f"Успешно выполнено: <b>{completed_count}</b> заказов\nЗаработано всего: <b>{total_earned}₽</b>\n"
+
+    my_active = []
+    for cid, order in active_orders.items():
+        if order.get("driver_id") == message.from_user.id and order.get("status") == "accepted":
+            name = order.get("service", {}).get("name") if order["type"] == "crazy" else f"Такси ({order['to']})"
+            my_active.append(f"🔹 {name} | 💰 {order['price']}")
+
+    active_text = "\n".join(my_active) if my_active else "<i>Пусто.</i>"
+    await message.answer(f"🪪 <b>КАБИНЕТ ВОДИТЕЛЯ</b>\n\n{hist_text}{balance_text}🔥 <b>Заказы в работе:</b>\n{active_text}")
+
+@dp.message(Command("driver"))
+async def cmd_driver_register(message: types.Message, state: FSMContext):
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM drivers WHERE user_id=?", (message.from_user.id,))
+    res = cursor.fetchone()
+    conn.close()
+    if res:
+        if res[0] == 'active': await message.answer("✅ Кабинет: /cab")
+        return
+    await message.answer("🚕 <b>РЕГИСТРАЦИЯ ВОДИТЕЛЯ</b>\nНапиши машину, цвет, номер:")
+    await state.set_state(DriverRegistration.waiting_for_car)
+
+@dp.message(DriverRegistration.waiting_for_car)
+async def process_car_info(message: types.Message, state: FSMContext):
+    await state.update_data(car_info=message.text)
+    await message.answer("💳 Напиши <b>реквизиты</b>:")
+    await state.set_state(DriverRegistration.waiting_for_payment_info)
+
+@dp.message(DriverRegistration.waiting_for_payment_info)
+async def process_payment_info(message: types.Message, state: FSMContext):
+    user_data = await state.get_data()
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("INSERT INTO drivers (user_id, username, car_info, payment_info, status) VALUES (?, ?, ?, ?, 'pending')", (message.from_user.id, message.from_user.username, user_data['car_info'], message.text))
+    conn.commit()
+    conn.close()
+    await state.clear()
+    await message.answer("📝 Заявка отправлена.")
+    admin_kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="✅ Одобрить", callback_data=f"adm_approve_{message.from_user.id}")]])
+    await bot.send_message(BOSS_ID, f"🚨 <b>ЗАЯВКА</b>\n@{message.from_user.username}\n{user_data['car_info']}", reply_markup=admin_kb)
+
+@dp.callback_query(F.data.startswith("adm_approve_"))
+async def admin_approve_driver(callback: types.CallbackQuery):
+    if callback.from_user.id != BOSS_ID: return
+    d_id = int(callback.data.split("_")[2])
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE drivers SET status='active' WHERE user_id=?", (d_id,))
+    conn.commit()
+    conn.close()
+    await callback.message.edit_text("✅ Одобрен.")
+    try: await bot.send_message(d_id, "🎉 Одобрен! /cab")
+    except: pass
+
+@dp.callback_query(F.data.startswith("adm_reject_"))
+async def admin_reject_driver(callback: types.CallbackQuery):
+    if callback.from_user.id != BOSS_ID: return
+    d_id = int(callback.data.split("_")[2])
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM drivers WHERE user_id=?", (d_id,))
+    conn.commit()
+    conn.close()
+    await callback.message.edit_text("❌ Отклонен.")
+
+# ====================
+# 🛠 РЕДАКТИРОВАНИЕ ВОДИТЕЛЯ (АДМИН)
+# ====================
+@dp.message(Command("admin"))
+async def cmd_admin(message: types.Message):
+    if message.from_user.id != BOSS_ID: return
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT user_id, username, status, balance FROM drivers")
+    all_drivers = cursor.fetchall()
+    conn.close()
+    text = "👑 <b>УПРАВЛЕНИЕ</b> 👑\n\n"
+    for d in all_drivers:
+        status_emoji = "🟢" if d[2] == 'active' else "🔴"
+        text += f"{status_emoji} <b>{d[1]}</b> (ID: {d[0]})\nДолг: {d[3]}₽\nРед: /edit_{d[0]} | Блок: /block_{d[0]}\n---\n"
+    await message.answer(text)
+
+@dp.message(F.text.startswith("/edit_"))
+async def edit_driver_menu(message: types.Message):
+    if message.from_user.id != BOSS_ID: return
+    d_id = int(message.text.split("_")[1])
+    info = get_driver_info(d_id)
+    if not info:
+        await message.answer("❌ Водитель не найден")
+        return
+        
+    text = f"✏️ <b>РЕДАКТОР: {info[0]}</b>\n\n🚗 Авто: {info[1]}\n💳 Реквизиты: {info[2]}\n💰 Баланс: {info[3]}₽"
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🚗 Изм. Авто", callback_data=f"edt_car_{d_id}")],
+        [InlineKeyboardButton(text="💳 Изм. Рекв.", callback_data=f"edt_pay_{d_id}")],
+        [InlineKeyboardButton(text="💰 Изм. Баланс", callback_data=f"edt_bal_{d_id}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="edt_back")]
+    ])
+    await message.answer(text, reply_markup=kb)
+
+@dp.callback_query(F.data.startswith("edt_"))
+async def edit_driver_cb(callback: types.CallbackQuery, state: FSMContext):
+    if callback.data == "edt_back":
+        await callback.message.delete()
+        return
+        
+    parts = callback.data.split("_")
+    field_code = parts[1] # car, pay, bal
+    d_id = int(parts[2])
+    
+    field_map = {"car": "car_info", "pay": "payment_info", "bal": "balance"}
+    target_field = field_map[field_code]
+    
+    await state.update_data(edit_driver_id=d_id, edit_field=target_field)
+    await callback.message.answer(f"✍️ Введи новое значение для <b>{target_field}</b>:")
+    await state.set_state(AdminEditDriver.waiting_for_new_value)
+    await callback.answer()
+
+@dp.message(AdminEditDriver.waiting_for_new_value)
+async def process_new_driver_value(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    d_id = data['edit_driver_id']
+    field = data['edit_field']
+    new_val = message.text
+    
+    # Для баланса проверяем число
+    if field == "balance":
+        try: new_val = int(new_val)
+        except: 
+            await message.answer("❌ Баланс должен быть числом.")
+            return
+
+    update_driver_field(d_id, field, new_val)
+    await message.answer(f"✅ Успешно обновлено! Проверь /edit_{d_id}")
+    await state.clear()
+
+@dp.message(F.text.startswith("/block_"))
+async def block_driver(message: types.Message):
+    if message.from_user.id != BOSS_ID: return
+    d_id = int(message.text.split("_")[1])
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("UPDATE drivers SET status='blocked' WHERE user_id=?", (d_id,))
+    conn.commit()
+    conn.close()
+    await message.answer(f"✅ Заблокирован.")
+
+async def main():
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    main()
-
+    asyncio.run(main())
